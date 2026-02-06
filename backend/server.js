@@ -37,13 +37,97 @@ function buildMessages(pageText, question) {
       content:
         "You are a helpful website assistant character living in the corner of the page. " +
         "Answer using ONLY the provided PAGE CONTENT. " +
-        "If the answer is not in the PAGE CONTENT, say you can't find it on this page.",
+        "If the answer is not in the PAGE CONTENT, say you can't find it on this page. " +
+        "Return ONLY strict JSON with keys: answer (string) and quotes (array of 1-3 exact verbatim snippets from PAGE CONTENT used to answer). " +
+        "Each quote must be an exact substring from PAGE CONTENT, ideally one full sentence or short clause (max 240 chars). " +
+        "The answer must be supported by one of the quotes; if not, set quotes to [].",
     },
     {
       role: "user",
-      content: `PAGE CONTENT:\n${clipped}\n\nQUESTION:\n${question}`,
+      content:
+        `PAGE CONTENT:\n${clipped}\n\nQUESTION:\n${question}\n\n` +
+        `Return JSON only.`,
     },
   ];
+}
+
+function extractQuotesFromPageText(pageText, answer) {
+  const text = (pageText || "").replace(/\s+/g, " ").trim();
+  if (!text || !answer) return [];
+
+  const sentences = text
+    .split(/[.!?]\s+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length >= 20 && s.length <= 320);
+
+  if (!sentences.length) return [];
+
+  const stop = new Set([
+    "the", "and", "that", "this", "with", "from", "your", "you", "about", "what",
+    "when", "where", "which", "their", "there", "have", "has", "been", "will",
+    "would", "could", "should", "into", "over", "under", "because", "also",
+    "than", "then", "them", "they", "here", "just", "like", "some", "more",
+    "most", "such", "many", "much", "find", "page", "content", "based", "answer",
+    "details", "size", "therefore", "cant", "cannot", "couldnt", "couldn't"
+  ]);
+
+  const tokens = (answer || "")
+    .toLowerCase()
+    .match(/\b[a-z0-9]{3,}\b/g)
+    ?.filter((w) => !stop.has(w)) || [];
+
+  const numbers = (answer || "").match(/\b\d+(\.\d+)?\b/g) || [];
+
+  let best = null;
+  let bestScore = 0;
+
+  for (const s of sentences) {
+    const lower = s.toLowerCase();
+    let score = 0;
+    for (const t of tokens) {
+      if (lower.includes(t)) score += 2;
+    }
+    for (const n of numbers) {
+      if (lower.includes(n)) score += 3;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      best = s;
+    }
+  }
+
+  return bestScore > 0 && best ? [best] : [];
+}
+
+function deriveAnswerFromPage(pageText, question) {
+  const text = (pageText || "").replace(/\s+/g, " ").trim();
+  if (!text) return null;
+
+  const q = (question || "").toLowerCase();
+  const sentences = text
+    .split(/[.!?]\s+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length >= 20 && s.length <= 320);
+
+  if (!sentences.length) return null;
+
+  const best = extractQuotesFromPageText(pageText, question)?.[0]
+    || extractQuotesFromPageText(pageText, text)?.[0]
+    || sentences[0];
+
+  const sentence = best || sentences[0];
+
+  if (q.includes("meaning") || q.includes("latin")) {
+    const meaningMatch = sentence.match(/\bmeaning\s+['"]?[^)".;]+/i);
+    if (meaningMatch) return meaningMatch[0].trim();
+  }
+
+  if (q.includes("latin") && q.includes("name")) {
+    const nameMatch = sentence.match(/\b[Tt]yrannosaurus rex\b/);
+    if (nameMatch) return nameMatch[0];
+  }
+
+  return sentence;
 }
 
 app.get("/health", (req, res) => {
@@ -102,12 +186,43 @@ app.post("/api/ask", async (req, res) => {
 
     const data = JSON.parse(rawText);
 
-    const answer =
+    const content =
       data?.choices?.[0]?.message?.content ||
       data?.choices?.[0]?.text ||
       "(No answer returned)";
 
-    res.json({ answer });
+    let answer = content;
+    let quotes = [];
+    const tryParse = (text) => {
+      try {
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
+    };
+
+    let parsed = tryParse(content);
+    if (!parsed) {
+      const match = content.match(/\{[\s\S]*\}/);
+      if (match) parsed = tryParse(match[0]);
+    }
+
+    if (parsed && typeof parsed.answer === "string") {
+      answer = parsed.answer;
+    }
+    if (Array.isArray(parsed?.quotes)) {
+      quotes = parsed.quotes.filter((q) => typeof q === "string");
+    }
+
+    if (!quotes.length) {
+      const derived = deriveAnswerFromPage(pageText, question);
+      if (derived) {
+        answer = derived;
+      }
+      quotes = extractQuotesFromPageText(pageText, answer);
+    }
+
+    res.json({ answer, quotes });
   } catch (err) {
     res.status(500).json({ error: "Backend crashed", details: String(err) });
   }

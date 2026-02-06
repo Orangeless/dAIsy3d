@@ -1,31 +1,26 @@
 (() => {
   // =========================================================
-  // EyeAI Injector (Static Idle PNG + MP4 animations)
-  // FIXED: idle animations now actually show (no broken-icon flash)
-  // - Keeps idle.png visible by default
-  // - Only hides PNG AFTER the video has loaded a frame (loadeddata/canplay)
-  // - Does NOT remove video src on idle (prevents broken icon flicker)
+  // EyeAI Injector
+  // FINAL ARCHITECTURE:
+  // - Idle state = paused video frame (NOT PNG)
+  // - Animation state = same video element playing
+  // - Rare idles override temporarily
+  // - UI is scaled WITHOUT touching internal resolution
   // =========================================================
 
-  // -----------------------------
-  // (A) CONFIG (EDIT ONLY HERE)
-  // -----------------------------
   const CFG = {
     backendUrl: "http://localhost:3001/api/ask",
-
-    // IMPORTANT:
-    // You are using paths like "assets/video/idle.png" already.
-    // So keep assetsBase empty to avoid double paths.
     assetsBase: "",
 
-    // Avatar box size (px)
-    avatarSize: 260,
+    // Native resolution (do NOT change)
+    avatarWidth: 640,
+    avatarHeight: 848,
 
-    // Where the avatar sits
-    avatarPos: { right: 18, bottom: 18 },
+    // Visual size on screen (only knob you touch)
+    avatarUIScale: 0.4,
 
-    // Input row position
-    inputPos: { right: 18, bottom: 18 },
+    avatarPos: { right: 32, bottom: 92 },
+    inputPos: { right: 32, bottom: 18 },
 
     bubbleMode: "fixed",
     bubbleFixed: { x: window.innerWidth - 380 - 18, y: 60 },
@@ -35,596 +30,1032 @@
     bubbleMaxHeight: 220,
     uiMaxWidth: 380,
 
-    // Often "main motion idle": every 20–40s
-    idleMainEverySecondsMin: 20,
-    idleMainEverySecondsMax: 40,
+    idleMainEverySecondsMin: 30,
+    idleMainEverySecondsMax: 60,
 
-    // Rare idle: every 120–240s
     idleRareEverySecondsMin: 120,
     idleRareEverySecondsMax: 240,
+    idleRareDurationSecondsMin: 5,
+    idleRareDurationSecondsMax: 5,
 
-    // Rare idle duration: 6–10s
-    idleRareDurationSecondsMin: 6,
-    idleRareDurationSecondsMax: 10,
+    // Canonical idle video (used for STILL + animation)
+    idleMainVideo: "assets/video/idle_main1.mp4",
 
-    // Files
-    idleStillPng: "assets/video/idle.png",
-
-    // Main motion idle videos
-    idleMainVideos: [
-      "assets/video/idle_main.mp4",  // 2s
-      "assets/video/idle_main1.mp4", // 5s
-    ],
-
-    // Fixed durations (seconds)
-    idleMainFixedDurationsSec: {
-      "assets/video/idle_main.mp4": 2,
-      "assets/video/idle_main1.mp4": 5,
-    },
-
-    // Rare idle videos
     idleRareVideos: [
       "assets/video/idle1.mp4",
       "assets/video/idle2.mp4",
     ],
 
-    // State videos (while thinking/talking/etc)
-    // FIX: make these consistent with your served folder (assets/video/...)
     videos: {
-      thinking: ["assets/video/explaining_negative.mp4"],
-      talking: ["assets/video/explaining_positive.mp4"],
-      pointing: ["assets/video/pointing.mp4"],
-      goodbye: ["assets/video/goodbye.mp4"],
+      talkingMid: ["assets/video/talking_mid.mp4"],
     },
 
-    // Video readiness timeout (ms) before we give up and keep PNG
     videoReadyTimeoutMs: 2500,
+    highlightMinMs: 3000,
+    highlightMaxMs: 10000,
   };
 
   // -----------------------------
-  // (B) Helpers
+  // Helpers
   // -----------------------------
-  function injectStyle(cssText) {
-    const el = document.createElement("style");
-    el.textContent = cssText;
-    document.documentElement.appendChild(el);
-    return el;
-  }
+  const nowMs = () => Date.now();
+  const randMs = (a, b) => (Math.random() * (b - a) + a) * 1000;
+  const resolveAsset = (p) => CFG.assetsBase + p;
 
-  function nowMs() {
-    return Date.now();
-  }
+  const pickClip = (arr) => (arr && arr.length ? arr[Math.floor(Math.random() * arr.length)] : null);
 
-  function randInt(min, max) {
-    return Math.floor(min + Math.random() * (max - min + 1));
-  }
-
-  function randMs(minSeconds, maxSeconds) {
-    return randInt(minSeconds, maxSeconds) * 1000;
-  }
-
-  function resolveAsset(rel) {
-    return CFG.assetsBase + rel;
-  }
-
-  function pickRandom(list) {
-    if (!list || list.length === 0) return null;
-    return list[Math.floor(Math.random() * list.length)];
-  }
+  const estimateTalkMs = (text) => {
+    const words = (text || "").trim().split(/\s+/).filter(Boolean).length;
+    const wpm = 160;
+    const ms = (words / wpm) * 60000;
+    return Math.max(2000, Math.min(15000, Math.round(ms)));
+  };
 
   // -----------------------------
-  // (C) Single-root guard
+  // Guard
   // -----------------------------
   const ROOT_ID = "eyeai-root";
   if (document.getElementById(ROOT_ID)) return;
 
   // -----------------------------
-  // (D) CSS (all injected)
+  // CSS (external)
   // -----------------------------
-  injectStyle(`
-    #${ROOT_ID}{
-      position:fixed;
-      left:0; top:0;
-      width:0; height:0;
-      z-index:1000000;
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-    }
-    #eyeai-root .eyeai-vtuber{
-      background: transparent !important;
-    }
-
-    #eyeai-root video.eyeai-video,
-    #eyeai-root img.eyeai-idlepng{
-    will-change: opacity;
-    transform: translateZ(0);
-    backface-visibility: hidden;
-    }
-
-
-    #${ROOT_ID} .eyeai-vtuber{
-      position:fixed;
-      width:${CFG.avatarSize}px;
-      height:${CFG.avatarSize}px;
-      border-radius:18px;
-      overflow:hidden;
-      background:transparent;
-      pointer-events:none;
-    }
-
-    #${ROOT_ID} .eyeai-avatar-layer{
-      position:absolute;
-      inset:0;
-      width:100%;
-      height:100%;
-      object-fit:contain;
-      display:block;
-    }
-
-    #${ROOT_ID} video.eyeai-video{
-      position:absolute;
-      inset:0;
-      width:100%;
-      height:100%;
-      object-fit:contain;
-      display:block;
-      opacity:0; /* hidden by default */
-      transition: opacity 300ms linear;
-    }
-
-    #${ROOT_ID} img.eyeai-idlepng{
-      position:absolute;
-      inset:0;
-      width:100%;
-      height:100%;
-      object-fit:contain;
-      display:block;
-      opacity:1;
-      transition: opacity 120ms linear;
-    }
-
-    #${ROOT_ID} .eyeai-bubble{
-      position:fixed;
-      left:0; top:0;
-      display:none;
-      max-width:${CFG.bubbleMaxWidth}px;
-      max-height:${CFG.bubbleMaxHeight}px;
-      padding:12px 14px;
-      padding-right:40px;
-      border-radius:16px;
-      background: rgba(20,20,22,0.92);
-      color: rgba(255,255,255,0.92);
-      box-shadow: 0 10px 30px rgba(0,0,0,0.22);
-      line-height:1.35;
-      pointer-events:auto;
-      user-select:text;
-    }
-
-    #${ROOT_ID} .eyeai-text{
-      font-size:14px;
-      overflow:auto;
-      max-height:${CFG.bubbleMaxHeight}px;
-      padding-right:4px;
-      white-space:pre-wrap;
-      word-break:break-word;
-    }
-
-    #${ROOT_ID} .eyeai-close{
-      position:absolute;
-      top:8px;
-      right:8px;
-      width:26px;
-      height:26px;
-      border-radius:10px;
-      border:none;
-      background: rgba(255,255,255,0.12);
-      color: rgba(255,255,255,0.9);
-      cursor:pointer;
-      pointer-events:auto;
-    }
-    #${ROOT_ID} .eyeai-close:hover{ background: rgba(255,255,255,0.18); }
-
-    #${ROOT_ID} .eyeai-tail{
-      position:fixed;
-      width:14px;
-      height:14px;
-      background: rgba(20,20,22,0.92);
-      transform: rotate(45deg);
-      display:none;
-      pointer-events:none;
-      box-shadow: 0 10px 30px rgba(0,0,0,0.12);
-    }
-
-    #${ROOT_ID} .eyeai-ui{
-      position:fixed;
-      width:${CFG.uiMaxWidth}px;
-      display:flex;
-      gap:8px;
-      align-items:center;
-      pointer-events:auto;
-    }
-
-    #${ROOT_ID} .eyeai-input{
-      flex:1;
-      padding:10px 12px;
-      border-radius:14px;
-      border: 1px solid rgba(0,0,0,0.12);
-      outline:none;
-      background: rgba(255,255,255,0.92);
-      font-size:14px;
-    }
-
-    #${ROOT_ID} .eyeai-btn{
-      padding:10px 12px;
-      border-radius:14px;
-      border:none;
-      cursor:pointer;
-      font-size:14px;
-      background: rgba(0,0,0,0.85);
-      color: white;
-    }
-    #${ROOT_ID} .eyeai-btn:hover{ background: rgba(0,0,0,0.75); }
-  `);
+  const styleLinkId = "eyeai-style-link";
+  if (!document.getElementById(styleLinkId)) {
+    const link = document.createElement("link");
+    link.id = styleLinkId;
+    link.rel = "stylesheet";
+    link.href = resolveAsset("eyeai.css");
+    document.head.appendChild(link);
+  }
 
   // -----------------------------
-  // (E) DOM creation
+  // DOM
   // -----------------------------
   const root = document.createElement("div");
   root.id = ROOT_ID;
 
+  const DPR = window.devicePixelRatio || 1;
+
+  const shell = document.createElement("div");
+  shell.className = "eyeai-shell";
+  shell.style.right = `${CFG.avatarPos.right}px`;
+  shell.style.bottom = `${CFG.avatarPos.bottom}px`;
+  shell.style.position = "fixed";
+
   const vtuber = document.createElement("div");
   vtuber.className = "eyeai-vtuber";
-  vtuber.style.right = `${CFG.avatarPos.right}px`;
-  vtuber.style.bottom = `${CFG.avatarPos.bottom}px`;
+  vtuber.style.width = `${CFG.avatarWidth}px`;
+  vtuber.style.height = `${CFG.avatarHeight}px`;
+  vtuber.style.transform = `scale(${CFG.avatarUIScale / DPR})`;
+  vtuber.style.transformOrigin = "bottom right";
+  vtuber.style.zoom = DPR;
 
-  const idlePng = document.createElement("img");
-  idlePng.className = "eyeai-idlepng eyeai-avatar-layer";
-  idlePng.alt = "idle";
-  idlePng.src = resolveAsset(CFG.idleStillPng);
+  const frame = document.createElement("div");
+  frame.className = "eyeai-frame";
 
-  const video = document.createElement("video");
-  video.className = "eyeai-video eyeai-avatar-layer";
-  video.muted = true;
-  video.playsInline = true;
-  video.autoplay = true;
-  video.loop = true;
-  video.preload = "auto";
-  video.poster = resolveAsset(CFG.idleStillPng);
-  video.style.backgroundColor = "transparent";
-
-
-  vtuber.appendChild(idlePng);
-  vtuber.appendChild(video);
-
-  const bubble = document.createElement("div");
-  bubble.className = "eyeai-bubble";
+  const dragHint = document.createElement("div");
+  dragHint.className = "eyeai-drag-hint";
+  dragHint.textContent = "Drag me";
 
   const closeBtn = document.createElement("button");
   closeBtn.className = "eyeai-close";
-  closeBtn.title = "Close";
-  closeBtn.textContent = "✕";
+  closeBtn.type = "button";
+  closeBtn.textContent = "×";
 
-  const bubbleText = document.createElement("div");
-  bubbleText.className = "eyeai-text";
+  // Idle still video (paused)
+  const idleStill = document.createElement("video");
+  idleStill.className = "eyeai-layer";
+  idleStill.muted = true;
+  idleStill.playsInline = true;
+  idleStill.autoplay = false;
+  idleStill.loop = false;
+  idleStill.preload = "auto";
+  idleStill.src = resolveAsset(CFG.idleMainVideo);
 
-  bubble.appendChild(closeBtn);
-  bubble.appendChild(bubbleText);
+  // Active animation video
+  const animVideo = document.createElement("video");
+  animVideo.className = "eyeai-layer";
+  animVideo.muted = true;
+  animVideo.playsInline = true;
+  animVideo.autoplay = false;
+  animVideo.loop = true;
+  animVideo.preload = "auto";
+  animVideo.setAttribute("playsinline", "");
+  animVideo.style.display = "none";
 
-  const tail = document.createElement("div");
-  tail.className = "eyeai-tail";
+  vtuber.appendChild(idleStill);
+  vtuber.appendChild(animVideo);
+  vtuber.appendChild(frame);
+  vtuber.appendChild(dragHint);
+
+  // UI (separate draggable shell)
+  const uiShell = document.createElement("div");
+  uiShell.className = "eyeai-ui-shell";
+  uiShell.style.right = `${CFG.inputPos.right}px`;
+  uiShell.style.bottom = `${CFG.inputPos.bottom}px`;
 
   const ui = document.createElement("div");
   ui.className = "eyeai-ui";
-  ui.style.right = `${CFG.inputPos.right}px`;
-  ui.style.bottom = `${CFG.inputPos.bottom}px`;
+  ui.style.width = `${CFG.uiMaxWidth}px`;
 
   const input = document.createElement("input");
   input.className = "eyeai-input";
-  input.placeholder = "Ask about this page…";
+  input.placeholder = "Ask…";
 
   const askBtn = document.createElement("button");
   askBtn.className = "eyeai-btn";
   askBtn.textContent = "Ask";
 
-  const speakBtn = document.createElement("button");
-  speakBtn.className = "eyeai-btn";
-  speakBtn.textContent = "Speak";
-
   ui.appendChild(input);
   ui.appendChild(askBtn);
-  ui.appendChild(speakBtn);
 
-  root.appendChild(vtuber);
+  uiShell.appendChild(ui);
+
+  const bubble = document.createElement("div");
+  bubble.className = "eyeai-bubble";
+  bubble.style.maxWidth = `${CFG.bubbleMaxWidth}px`;
+  bubble.style.maxHeight = `${CFG.bubbleMaxHeight}px`;
+  const bubbleClose = document.createElement("button");
+  bubbleClose.className = "eyeai-bubble-close";
+  bubbleClose.type = "button";
+  bubbleClose.textContent = "×";
+  bubble.appendChild(bubbleClose);
+  const bubbleBody = document.createElement("div");
+  bubbleBody.className = "eyeai-bubble-body";
+  bubble.appendChild(bubbleBody);
+  const bubbleCollapsed = document.createElement("div");
+  bubbleCollapsed.className = "eyeai-bubble-collapsed";
+  bubbleCollapsed.textContent = "Show answer";
+  bubble.appendChild(bubbleCollapsed);
+
+  shell.appendChild(vtuber);
+  shell.appendChild(closeBtn);
+
+  root.appendChild(shell);
+  root.appendChild(uiShell);
   root.appendChild(bubble);
-  root.appendChild(tail);
-  root.appendChild(ui);
   document.body.appendChild(root);
 
+  // Ensure the idle still frame is loaded and visible on startup
+  idleStill.load();
+  holdIdleStill(CFG.idleMainVideo);
+
   // -----------------------------
-  // (F) Bubble positioning
+  // Idle still setup
   // -----------------------------
-  function positionBubble() {
-    if (CFG.bubbleMode === "fixed") {
-      bubble.style.left = `${CFG.bubbleFixed.x}px`;
-      bubble.style.top = `${CFG.bubbleFixed.y}px`;
-      tail.style.left = `${CFG.bubbleFixed.x + 40}px`;
-      tail.style.top = `${CFG.bubbleFixed.y + bubble.offsetHeight - 10}px`;
+  let idleStillHold = false;
+  idleStill.addEventListener("loadeddata", () => {
+    if (idleStillHold) return;
+    idleStill.currentTime = 0;
+    idleStill.pause();
+  });
+
+  // -----------------------------
+  // Video helpers
+  // -----------------------------
+  let animTimeHandler = null;
+
+  async function playVideo(src, loop = true) {
+    if (document.visibilityState === "hidden") return;
+    animVideo.src = resolveAsset(src);
+    animVideo.loop = loop;
+    if (animTimeHandler) {
+      animVideo.removeEventListener("timeupdate", animTimeHandler);
+      animTimeHandler = null;
+    }
+    try {
+      await animVideo.play();
+    } catch (err) {
+      if (err && err.name !== "AbortError") {
+        console.warn("Video play failed", err);
+      }
       return;
     }
-    const rect = vtuber.getBoundingClientRect();
-    const x = rect.left + CFG.bubbleOffset.dx;
-    const y = rect.top + CFG.bubbleOffset.dy;
-    bubble.style.left = `${x}px`;
-    bubble.style.top = `${y}px`;
-    tail.style.left = `${rect.left + 40}px`;
-    tail.style.top = `${rect.top + 90}px`;
+    animVideo.style.display = "block";
+  }
+
+  function stopVideo() {
+    if (animTimeHandler) {
+      animVideo.removeEventListener("timeupdate", animTimeHandler);
+      animTimeHandler = null;
+    }
+    animVideo.pause();
+    animVideo.style.display = "none";
+  }
+
+  async function holdIdleStill(src) {
+    try {
+      idleStillHold = true;
+      idleStill.src = resolveAsset(src);
+      await waitForMetadata(idleStill);
+      const last = Math.max(0, (idleStill.duration || 0) - 0.05);
+      idleStill.currentTime = last;
+      idleStill.pause();
+    } catch {
+      // no-op
+    }
+  }
+
+  function waitForMetadata(video) {
+    if (video.readyState >= 1 && !isNaN(video.duration)) return Promise.resolve();
+    return new Promise((resolve) => {
+      const onMeta = () => {
+        video.removeEventListener("loadedmetadata", onMeta);
+        resolve();
+      };
+      video.addEventListener("loadedmetadata", onMeta);
+    });
+  }
+
+  async function playSegment(video, startSec, endSec, loop) {
+    if (document.visibilityState === "hidden") return false;
+    await waitForMetadata(video);
+    const dur = video.duration || 0;
+    const start = Math.max(0, Math.min(startSec, dur));
+    const end = Math.max(start, Math.min(endSec, dur));
+    if (end <= start) return false;
+
+    let resolveDone;
+    const done = new Promise((resolve) => {
+      resolveDone = resolve;
+    });
+
+    const onTime = () => {
+      if (video.currentTime >= end) {
+        if (loop) {
+          video.currentTime = start;
+        } else {
+          video.pause();
+          video.removeEventListener("timeupdate", onTime);
+          if (animTimeHandler === onTime) animTimeHandler = null;
+          resolveDone(true);
+        }
+      }
+    };
+
+    if (animTimeHandler) {
+      video.removeEventListener("timeupdate", animTimeHandler);
+      animTimeHandler = null;
+    }
+    video.currentTime = start;
+    video.addEventListener("timeupdate", onTime);
+    animTimeHandler = onTime;
+    try {
+      await video.play();
+    } catch (err) {
+      if (err && err.name !== "AbortError") {
+        console.warn("Video segment play failed", err);
+      }
+      return false;
+    }
+    if (loop) return true;
+    return await done;
+  }
+
+  async function playLoopFor(src, ms) {
+    if (!src) return false;
+    stopVideo();
+    animVideo.src = resolveAsset(src);
+    animVideo.loop = true;
+    animVideo.style.display = "block";
+    await waitForMetadata(animVideo);
+    try {
+      await animVideo.play();
+    } catch (err) {
+      if (err && err.name !== "AbortError") {
+        console.warn("Video play failed", err);
+      }
+      return false;
+    }
+    await new Promise((resolve) => setTimeout(resolve, ms));
+    animVideo.loop = false;
+    return true;
+  }
+
+  // -----------------------------
+  // Scheduler
+  // -----------------------------
+  const idlePool = [CFG.idleMainVideo, ...CFG.idleRareVideos];
+  let nextIdle = nowMs() + 3000;
+  let until = 0;
+
+  let talkTimer = null;
+  let talkToken = 0;
+  let animationHold = false;
+  let highlightTimer = null;
+  let activeHighlights = [];
+  let bubbleCustomPos = null;
+  let idlePlaying = false;
+
+  function releaseToIdle() {
+    stopVideo();
+    animationHold = false;
+    until = 0;
+    nextIdle = nowMs() + 3000;
+  }
+
+  async function tick() {
+    if (animationHold) return;
+    const t = nowMs();
+    if (t < until) return;
+
+    if (t >= nextIdle) {
+      if (idlePlaying) return;
+      idlePlaying = true;
+      const clip = idlePool[Math.floor(Math.random() * idlePool.length)];
+      stopVideo();
+      animVideo.src = resolveAsset(clip);
+      animVideo.loop = false;
+      await waitForMetadata(animVideo);
+      const durMs = Math.max(1000, Math.round((animVideo.duration || 5) * 1000));
+      animVideo.style.display = "block";
+      try {
+        const played = await playSegment(animVideo, 0, (animVideo.duration || 5), false);
+        if (!played) {
+          animVideo.style.display = "none";
+          nextIdle = t + 5000;
+          return;
+        }
+        await holdIdleStill(clip);
+        stopVideo();
+        until = t + durMs;
+        nextIdle = t + randMs(CFG.idleMainEverySecondsMin, CFG.idleMainEverySecondsMax);
+        return;
+      } finally {
+        idlePlaying = false;
+      }
+    }
+
+    stopVideo();
+  }
+
+  const tickInterval = setInterval(tick, 250);
+
+  // -----------------------------
+  // Ask handling
+  // -----------------------------
+  function positionBubble() {
+    if (bubbleCustomPos) {
+      bubble.style.left = `${bubbleCustomPos.x}px`;
+      bubble.style.top = `${bubbleCustomPos.y}px`;
+      bubble.style.right = "auto";
+      bubble.style.bottom = "auto";
+      return;
+    }
+    if (CFG.bubbleMode === "fixed") {
+      const x = window.innerWidth - CFG.bubbleMaxWidth - 18;
+      const y = 60;
+      bubble.style.left = `${x}px`;
+      bubble.style.top = `${y}px`;
+      bubble.style.right = "auto";
+      bubble.style.bottom = "auto";
+      return;
+    }
+
+    const rect = shell.getBoundingClientRect();
+    const anchorX = rect.right;
+    const anchorY = rect.top;
+    bubble.style.left = `${anchorX + CFG.bubbleOffset.dx}px`;
+    bubble.style.top = `${anchorY + CFG.bubbleOffset.dy}px`;
+    bubble.style.right = "auto";
+    bubble.style.bottom = "auto";
   }
 
   function showBubble(text) {
-    bubbleText.textContent = text || "";
+    bubble.classList.remove("eyeai-collapsed");
+    bubbleBody.textContent = text;
+    positionBubble();
     bubble.style.display = "block";
-    tail.style.display = "block";
-    positionBubble();
   }
 
-  function hideBubble() {
-    bubble.style.display = "none";
-    tail.style.display = "none";
+  function minimizeBubble() {
+    bubble.classList.add("eyeai-collapsed");
   }
 
-  closeBtn.addEventListener("click", hideBubble);
-  window.addEventListener("resize", () => {
-    CFG.bubbleFixed.x = window.innerWidth - CFG.bubbleMaxWidth - 18;
-    positionBubble();
+  function restoreBubble() {
+    bubble.classList.remove("eyeai-collapsed");
+  }
+
+  function clearHighlights() {
+    if (highlightTimer) {
+      clearTimeout(highlightTimer);
+      highlightTimer = null;
+    }
+    for (const span of activeHighlights) {
+      if (!span || !span.parentNode) continue;
+      const parent = span.parentNode;
+      const text = document.createTextNode(span.textContent || "");
+      parent.replaceChild(text, span);
+      if (parent.normalize) parent.normalize();
+    }
+    activeHighlights = [];
+  }
+
+  function sanitizeForMatch(text) {
+    return (text || "")
+      .replace(/\*\*/g, "")
+      .replace(/[`~]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function wrapTextRange(node, start, end) {
+    const text = node.nodeValue || "";
+    const before = text.slice(0, start);
+    const middle = text.slice(start, end);
+    const after = text.slice(end);
+    const parent = node.parentNode;
+    if (!parent) return null;
+    const frag = document.createDocumentFragment();
+    if (before) frag.appendChild(document.createTextNode(before));
+    const mark = document.createElement("span");
+    mark.className = "eyeai-highlight";
+    mark.textContent = middle;
+    frag.appendChild(mark);
+    if (after) frag.appendChild(document.createTextNode(after));
+    parent.replaceChild(frag, node);
+    return mark;
+  }
+
+  function buildKeywords(text) {
+    const stop = new Set([
+      "the", "and", "that", "this", "with", "from", "your", "you", "about", "what",
+      "when", "where", "which", "their", "there", "have", "has", "been", "will",
+      "would", "could", "should", "into", "over", "under", "because", "also",
+      "than", "then", "them", "they", "here", "just", "like", "some", "more",
+      "most", "such", "many", "much", "find", "page", "content", "based", "answer",
+      "details", "size", "therefore", "cant", "cannot", "couldnt", "couldn't"
+    ]);
+    const words = (text || "").toLowerCase().match(/\b[a-z0-9]{3,}\b/g) || [];
+    const unique = [];
+    const seen = new Set();
+    for (const w of words) {
+      if (stop.has(w) || seen.has(w)) continue;
+      seen.add(w);
+      unique.push(w);
+      if (unique.length >= 8) break;
+    }
+    return unique;
+  }
+
+  function findTextMatch(phrase) {
+    const needle = (phrase || "").trim();
+    if (!needle) return null;
+    const lowerNeedle = needle.toLowerCase();
+    const walker = document.createTreeWalker(
+      document.body,
+      NodeFilter.SHOW_TEXT,
+      {
+        acceptNode(node) {
+          if (!node || !node.parentElement) return NodeFilter.FILTER_REJECT;
+          if (!node.nodeValue || !node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+          const parent = node.parentElement;
+          if (parent.closest(`#${ROOT_ID}`)) return NodeFilter.FILTER_REJECT;
+          const tag = parent.tagName;
+          if (tag === "SCRIPT" || tag === "STYLE" || tag === "NOSCRIPT") {
+            return NodeFilter.FILTER_REJECT;
+          }
+          if (tag === "TEXTAREA" || tag === "INPUT") return NodeFilter.FILTER_REJECT;
+          return NodeFilter.FILTER_ACCEPT;
+        },
+      }
+    );
+
+    let node;
+    while ((node = walker.nextNode())) {
+      const text = node.nodeValue || "";
+      const idx = text.toLowerCase().indexOf(lowerNeedle);
+      if (idx !== -1) return { node, start: idx, end: idx + needle.length };
+    }
+    return null;
+  }
+
+  function getPageText() {
+    const nodes = collectTextNodes();
+    let text = "";
+    for (const node of nodes) {
+      const value = node.nodeValue || "";
+      if (!value.trim()) continue;
+      text += value + " ";
+      if (text.length > 200000) break;
+    }
+    return text.replace(/\s+/g, " ").trim();
+  }
+
+  function findBestKeywordMatch(keywords) {
+    if (!keywords || !keywords.length) return null;
+    const walker = document.createTreeWalker(
+      document.body,
+      NodeFilter.SHOW_TEXT,
+      {
+        acceptNode(node) {
+          if (!node || !node.parentElement) return NodeFilter.FILTER_REJECT;
+          if (!node.nodeValue || !node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+          const parent = node.parentElement;
+          if (parent.closest(`#${ROOT_ID}`)) return NodeFilter.FILTER_REJECT;
+          const tag = parent.tagName;
+          if (tag === "SCRIPT" || tag === "STYLE" || tag === "NOSCRIPT") {
+            return NodeFilter.FILTER_REJECT;
+          }
+          if (tag === "TEXTAREA" || tag === "INPUT") return NodeFilter.FILTER_REJECT;
+          return NodeFilter.FILTER_ACCEPT;
+        },
+      }
+    );
+
+    let best = null;
+    let bestScore = 0;
+    let node;
+    while ((node = walker.nextNode())) {
+      const text = (node.nodeValue || "").toLowerCase();
+      let score = 0;
+      let firstMatch = null;
+      for (const kw of keywords) {
+        const idx = text.indexOf(kw);
+        if (idx !== -1) {
+          score += 1;
+          if (!firstMatch) {
+            firstMatch = { start: idx, end: idx + kw.length };
+          }
+        }
+      }
+      if (score > bestScore && firstMatch) {
+        bestScore = score;
+        best = { node, start: firstMatch.start, end: firstMatch.end };
+      }
+    }
+    return best;
+  }
+
+  function normalizeForMatch(text) {
+    const src = text || "";
+    let out = "";
+    let lastSpace = false;
+    for (let i = 0; i < src.length; i += 1) {
+      const ch = src[i];
+      const isAlnum = /[a-z0-9]/i.test(ch);
+      if (isAlnum) {
+        out += ch.toLowerCase();
+        lastSpace = false;
+      } else {
+        if (!lastSpace) {
+          out += " ";
+          lastSpace = true;
+        }
+      }
+    }
+    return out.trim();
+  }
+
+  function collectTextNodes() {
+    const nodes = [];
+    const walker = document.createTreeWalker(
+      document.body,
+      NodeFilter.SHOW_TEXT,
+      {
+        acceptNode(node) {
+          if (!node || !node.parentElement) return NodeFilter.FILTER_REJECT;
+          if (!node.nodeValue || !node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+          const parent = node.parentElement;
+          if (parent.closest(`#${ROOT_ID}`)) return NodeFilter.FILTER_REJECT;
+          const tag = parent.tagName;
+          if (tag === "SCRIPT" || tag === "STYLE" || tag === "NOSCRIPT") {
+            return NodeFilter.FILTER_REJECT;
+          }
+          if (tag === "TEXTAREA" || tag === "INPUT") return NodeFilter.FILTER_REJECT;
+          return NodeFilter.FILTER_ACCEPT;
+        },
+      }
+    );
+
+    let node;
+    while ((node = walker.nextNode())) {
+      nodes.push(node);
+      if (nodes.length > 5000) break;
+    }
+    return nodes;
+  }
+
+  function buildNormalizedIndex(nodes, limit = 200000) {
+    let text = "";
+    const map = [];
+    let lastWasSpace = false;
+
+    for (const node of nodes) {
+      const value = node.nodeValue || "";
+      for (let i = 0; i < value.length; i += 1) {
+        const ch = value[i];
+        const isAlnum = /[a-z0-9]/i.test(ch);
+        if (isAlnum) {
+          text += ch.toLowerCase();
+          map.push({ node, offset: i });
+          lastWasSpace = false;
+        } else if (!lastWasSpace) {
+          text += " ";
+          map.push({ node, offset: i });
+          lastWasSpace = true;
+        }
+        if (text.length >= limit) return { text, map };
+      }
+      if (!lastWasSpace && text.length) {
+        text += " ";
+        map.push({ node, offset: (value.length ? value.length - 1 : 0) });
+        lastWasSpace = true;
+      }
+      if (text.length >= limit) return { text, map };
+    }
+
+    return { text, map };
+  }
+
+  function wrapTextNodePortion(node, start, end) {
+    const text = node.nodeValue || "";
+    const before = text.slice(0, start);
+    const middle = text.slice(start, end);
+    const after = text.slice(end);
+    const parent = node.parentNode;
+    if (!parent || !middle) return null;
+    const frag = document.createDocumentFragment();
+    if (before) frag.appendChild(document.createTextNode(before));
+    const mark = document.createElement("span");
+    mark.className = "eyeai-highlight";
+    mark.textContent = middle;
+    frag.appendChild(mark);
+    if (after) frag.appendChild(document.createTextNode(after));
+    parent.replaceChild(frag, node);
+    return mark;
+  }
+
+  function highlightQuoteExact(quote) {
+    const cleanedQuote = normalizeForMatch(sanitizeForMatch(quote));
+    if (!cleanedQuote) return false;
+    const nodes = collectTextNodes();
+    const { text, map } = buildNormalizedIndex(nodes);
+    const idx = text.indexOf(cleanedQuote);
+    if (idx === -1) return false;
+
+    const startMap = map[idx];
+    const endMap = map[idx + cleanedQuote.length - 1];
+    if (!startMap || !endMap) return false;
+
+    const startIndex = nodes.indexOf(startMap.node);
+    const endIndex = nodes.indexOf(endMap.node);
+    if (startIndex === -1 || endIndex === -1) return false;
+
+    for (let i = startIndex; i <= endIndex; i += 1) {
+      const node = nodes[i];
+      if (!node || !node.parentNode) continue;
+      if (i === startIndex && i === endIndex) {
+        const mark = wrapTextNodePortion(node, startMap.offset, endMap.offset + 1);
+        if (mark) activeHighlights.push(mark);
+      } else if (i === startIndex) {
+        const mark = wrapTextNodePortion(node, startMap.offset, (node.nodeValue || "").length);
+        if (mark) activeHighlights.push(mark);
+      } else if (i === endIndex) {
+        const mark = wrapTextNodePortion(node, 0, endMap.offset + 1);
+        if (mark) activeHighlights.push(mark);
+      } else {
+        const mark = wrapTextNodePortion(node, 0, (node.nodeValue || "").length);
+        if (mark) activeHighlights.push(mark);
+      }
+    }
+
+    if (activeHighlights.length) {
+      activeHighlights[0].scrollIntoView({ behavior: "smooth", block: "center" });
+      return true;
+    }
+    return false;
+  }
+
+  function highlightQuotes(quotes, durationMs) {
+    if (!quotes || !quotes.length) return false;
+    let hit = false;
+    for (const quote of quotes) {
+      if (highlightQuoteExact(quote)) {
+        hit = true;
+        break;
+      }
+    }
+
+    if (!hit) return false;
+    const clippedMs = Math.min(CFG.highlightMaxMs, Math.max(CFG.highlightMinMs, durationMs));
+    highlightTimer = setTimeout(() => {
+      clearHighlights();
+    }, clippedMs);
+    return true;
+  }
+
+  function extractQuoteFromPage(answer) {
+    const pageText = getPageText();
+    if (!pageText) return null;
+    const sentences = pageText
+      .split(/[.!?]\s+/)
+      .map((s) => s.trim())
+      .filter((s) => s.length >= 20 && s.length <= 320);
+
+    if (!sentences.length) return null;
+
+    const tokens = buildKeywords(answer);
+    const numbers = (answer || "").match(/\b\d+(\.\d+)?\b/g) || [];
+    let best = null;
+    let bestScore = 0;
+
+    for (const s of sentences) {
+      const lower = s.toLowerCase();
+      let score = 0;
+      for (const t of tokens) {
+        if (lower.includes(t)) score += 2;
+      }
+      for (const n of numbers) {
+        if (lower.includes(n)) score += 3;
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        best = s;
+      }
+    }
+
+    return bestScore > 0 ? best : null;
+  }
+
+  function highlightRelevantText(answer, question, durationMs) {
+    clearHighlights();
+    const cleanedAnswer = sanitizeForMatch(answer);
+    const sentences = (cleanedAnswer || "")
+      .split(/[.!?]\s+/)
+      .map((s) => s.trim())
+      .filter((s) => s.length >= 20)
+      .sort((a, b) => b.length - a.length)
+      .slice(0, 3);
+
+    let match = null;
+    for (const sentence of sentences) {
+      match = findTextMatch(sentence);
+      if (match) break;
+    }
+
+    if (!match) {
+      const keywords = buildKeywords(`${question} ${cleanedAnswer}`);
+      match = findBestKeywordMatch(keywords);
+    }
+
+    if (!match) return false;
+    const mark = wrapTextRange(match.node, match.start, match.end);
+    if (!mark) return false;
+    activeHighlights.push(mark);
+    mark.scrollIntoView({ behavior: "smooth", block: "center" });
+
+    const clippedMs = Math.min(CFG.highlightMaxMs, Math.max(CFG.highlightMinMs, durationMs));
+    highlightTimer = setTimeout(() => {
+      clearHighlights();
+    }, clippedMs);
+    return true;
+  }
+
+  bubbleClose.addEventListener("click", (e) => {
+    e.stopPropagation();
+    minimizeBubble();
+    releaseToIdle();
+    clearHighlights();
   });
-  window.addEventListener("scroll", positionBubble, { passive: true });
 
-  // -----------------------------
-  // (G) Page text extraction
-  // -----------------------------
-  function extractPageText() {
-    const text = document.body?.innerText || "";
-    return text.replace(/\s+/g, " ").trim().slice(0, 40000);
-  }
+  closeBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    releaseToIdle();
+    clearInterval(tickInterval);
+    root.style.display = "none";
+    clearHighlights();
+  });
 
-  // -----------------------------
-  // (H) Backend call
-  // -----------------------------
-  async function askBackend(question) {
-    const pageText = extractPageText();
-    let r;
+  let bubbleDragged = false;
+
+  bubble.addEventListener("click", () => {
+    if (bubbleDragged) {
+      bubbleDragged = false;
+      return;
+    }
+    minimizeBubble();
+  });
+
+  bubbleCollapsed.addEventListener("click", (e) => {
+    e.stopPropagation();
+    restoreBubble();
+  });
+
+  async function handleAsk() {
+    const question = input.value.trim();
+    if (!question) return;
+
+    input.disabled = true;
+    askBtn.disabled = true;
+    showBubble("Thinking...");
+
+    animationHold = true;
+    if (talkTimer) clearTimeout(talkTimer);
+    talkToken += 1;
+    const myToken = talkToken;
+    clearHighlights();
+    bubbleCustomPos = null;
+
+    // No thinking clip (removed per request)
+
     try {
-      r = await fetch(CFG.backendUrl, {
+      const pageText = getPageText();
+
+      const res = await fetch(CFG.backendUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question, pageText }),
       });
-    } catch (e) {
-      throw new Error("Failed to fetch backend. Run `npm start`. Details: " + String(e));
-    }
 
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(data?.details || data?.error || `HTTP ${r.status}`);
-    return data.answer || "(no answer)";
-  }
+      if (!res.ok) throw new Error(`Request failed (${res.status})`);
 
-  // -----------------------------
-  // (I) Avatar switching
-  // -----------------------------
-  const AVATAR = {
-    state: "idle",
-    gestureUnlocked: false,
-    nextMainAt: nowMs() + randMs(CFG.idleMainEverySecondsMin, CFG.idleMainEverySecondsMax),
-    mainUntil: 0,
-    nextRareAt: nowMs() + randMs(CFG.idleRareEverySecondsMin, CFG.idleRareEverySecondsMax),
-    rareUntil: 0,
-  };
+      const data = await res.json();
+      console.log("AI response:", data);
+      console.log("quotes:", data?.quotes);
 
-  function showPngIdle() {
-    idlePng.style.opacity = "1";
-    video.style.opacity = "0";
-    // IMPORTANT: do NOT remove src (that was causing the broken-icon flash)
-    video.pause();
-    try { video.currentTime = 0; } catch {}
-  }
+      let answer =
+        data?.answer ??
+        data?.response ??
+        (typeof data === "string" ? data : JSON.stringify(data));
+      const quotes = Array.isArray(data?.quotes) ? data.quotes : [];
 
-  async function tryPlay() {
-    try {
-      await video.play();
-      return true;
-    } catch {
-      return false;
-    }
-  }
+      showBubble(answer || "No response.");
+      input.value = "";
 
-  function waitForVideoReady(timeoutMs) {
-    return new Promise((resolve, reject) => {
-      let done = false;
-      const cleanup = () => {
-        video.removeEventListener("loadeddata", onReady);
-        video.removeEventListener("canplay", onReady);
-        video.removeEventListener("error", onErr);
-      };
-      const finishOk = () => {
-        if (done) return;
-        done = true;
-        cleanup();
-        resolve(true);
-      };
-      const finishErr = (err) => {
-        if (done) return;
-        done = true;
-        cleanup();
-        reject(err || new Error("video error"));
-      };
-      const onReady = () => finishOk();
-      const onErr = () => finishErr(new Error("Failed to load video: " + (video.currentSrc || video.src)));
-
-      video.addEventListener("loadeddata", onReady, { once: true });
-      video.addEventListener("canplay", onReady, { once: true });
-      video.addEventListener("error", onErr, { once: true });
-
-      // If already ready, resolve immediately
-      if (video.readyState >= 2) finishOk();
-
-      setTimeout(() => {
-        if (!done) finishErr(new Error("Timed out waiting for video ready"));
-      }, timeoutMs);
-    });
-  }
-
-  async function setVideoSrc(rel, { loop = true } = {}) {
-    if (!rel) return;
-
-    // Keep PNG visible until we KNOW the video is ready
-    video.style.opacity = "0";
-    idlePng.style.opacity = "1";
-
-    video.loop = loop;
-
-    const full = resolveAsset(rel);
-
-    // Swap source if needed
-    if (!video.src || video.src !== full) {
-      video.src = full;
-      video.load();
-    } else {
-      // same source; restart it
-      try { video.currentTime = 0; } catch {}
-    }
-
-    try {
-      await waitForVideoReady(CFG.videoReadyTimeoutMs);
-
-      const ok = await tryPlay();
-      if (!ok) {
-        showPngIdle();
-        return;
+      const durationMs = estimateTalkMs(answer);
+      let quoteHit = highlightQuotes(quotes, durationMs);
+      if (!quoteHit) {
+        const fallbackQuote = extractQuoteFromPage(answer);
+        if (fallbackQuote) {
+          quoteHit = highlightQuotes([fallbackQuote], durationMs);
+        }
       }
+      const midClip = pickClip(CFG.videos?.talkingMid);
 
-      // Only now show the video
-      idlePng.style.opacity = "0";
-      video.style.opacity = "1";
-    } catch (e) {
-      // If load fails, stay on PNG (no flicker)
-      console.warn(String(e));
-      showPngIdle();
-    }
-  }
+      const midMs = Math.max(2000, durationMs);
 
-  async function setState(state) {
-    AVATAR.state = state;
-
-    if (state === "idle") {
-      showPngIdle();
-      return;
-    }
-
-    const rel = (CFG.videos[state] && CFG.videos[state][0]) || null;
-    if (rel) await setVideoSrc(rel, { loop: true });
-  }
-
-  function unlockOnGesture() {
-    if (AVATAR.gestureUnlocked) return;
-    AVATAR.gestureUnlocked = true;
-    tryPlay();
-    window.removeEventListener("pointerdown", unlockOnGesture);
-    window.removeEventListener("keydown", unlockOnGesture);
-  }
-  window.addEventListener("pointerdown", unlockOnGesture);
-  window.addEventListener("keydown", unlockOnGesture);
-
-  // -----------------------------
-  // (J) Idle scheduler
-  // -----------------------------
-  async function idleSchedulerTick() {
-    if (AVATAR.state !== "idle") return;
-    const t = nowMs();
-
-    if (AVATAR.rareUntil && t >= AVATAR.rareUntil) {
-      AVATAR.rareUntil = 0;
-      showPngIdle();
-      AVATAR.nextRareAt = t + randMs(CFG.idleRareEverySecondsMin, CFG.idleRareEverySecondsMax);
-      return;
-    }
-
-    if (AVATAR.mainUntil && t >= AVATAR.mainUntil) {
-      AVATAR.mainUntil = 0;
-      showPngIdle();
-      AVATAR.nextMainAt = t + randMs(CFG.idleMainEverySecondsMin, CFG.idleMainEverySecondsMax);
-      return;
-    }
-
-    if (!AVATAR.rareUntil && !AVATAR.mainUntil) {
-      if (t >= AVATAR.nextRareAt && CFG.idleRareVideos.length > 0) {
-        const clip = pickRandom(CFG.idleRareVideos);
-        const dur = randMs(CFG.idleRareDurationSecondsMin, CFG.idleRareDurationSecondsMax);
-        AVATAR.rareUntil = t + dur;
-        await setVideoSrc(clip, { loop: true });
-        return;
+      if (midClip) {
+        await playLoopFor(midClip, midMs);
+        if (talkToken !== myToken) return;
+        await holdIdleStill(CFG.idleMainVideo);
+        releaseToIdle();
+      } else {
+        releaseToIdle();
       }
-
-      if (t >= AVATAR.nextMainAt && CFG.idleMainVideos.length > 0) {
-        const clip = pickRandom(CFG.idleMainVideos);
-        const sec = (CFG.idleMainFixedDurationsSec && CFG.idleMainFixedDurationsSec[clip]) || 4;
-        const dur = sec * 1000;
-        AVATAR.mainUntil = t + dur;
-        await setVideoSrc(clip, { loop: true });
-        return;
-      }
+    } catch (err) {
+      showBubble("Sorry, I couldn't reach the server.");
+      console.error(err);
+      releaseToIdle();
+    } finally {
+      input.disabled = false;
+      askBtn.disabled = false;
     }
   }
 
-  // -----------------------------
-  // (K) TTS
-  // -----------------------------
-  let lastAnswer = "";
-
-  function speak(text) {
-    if (!text) return;
-    speechSynthesis.cancel();
-
-    const u = new SpeechSynthesisUtterance(text);
-    u.rate = 1.0;
-    u.pitch = 1.05;
-
-    u.onstart = () => setState("talking");
-    u.onend = () => setState("idle");
-    u.onerror = () => setState("idle");
-
-    speechSynthesis.speak(u);
-  }
-
-  // -----------------------------
-  // (L) Main ask flow
-  // -----------------------------
-  async function runAsk() {
-    const q = (input.value || "").trim() || "Summarize this page in 3 bullet points.";
-    showBubble("Thinking...");
-    await setState("thinking");
-
-    try {
-      const ans = await askBackend(q);
-      lastAnswer = ans;
-      showBubble(ans);
-      speak(ans);
-    } catch (e) {
-      showBubble("Error: " + e.message);
-      setState("idle");
-    }
-  }
-
-  askBtn.addEventListener("click", runAsk);
+  askBtn.addEventListener("click", handleAsk);
   input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") runAsk();
+    if (e.key === "Enter") handleAsk();
   });
-  speakBtn.addEventListener("click", () => speak(lastAnswer || bubbleText.textContent || ""));
+
+  window.addEventListener("resize", () => {
+    if (bubble.style.display !== "none") positionBubble();
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      stopVideo();
+      animationHold = false;
+    }
+  });
 
   // -----------------------------
-  // (M) Start
+  // Drag to move (answer bubble)
   // -----------------------------
-  (async () => {
-    showPngIdle();
-    showBubble("Ask me about this page 👇");
-    setInterval(idleSchedulerTick, 250);
-  })();
+  let bubbleDragOn = false;
+  let bubbleDragStartX = 0;
+  let bubbleDragStartY = 0;
+  let bubbleStartLeft = 0;
+  let bubbleStartTop = 0;
+
+  function onBubbleDragStart(e) {
+    if (e.target === bubbleClose) return;
+    bubbleDragOn = true;
+    const pt = e.touches ? e.touches[0] : e;
+    const rect = bubble.getBoundingClientRect();
+    bubbleDragStartX = pt.clientX;
+    bubbleDragStartY = pt.clientY;
+    bubbleStartLeft = rect.left;
+    bubbleStartTop = rect.top;
+    bubble.style.cursor = "grabbing";
+  }
+
+  function onBubbleDragMove(e) {
+    if (!bubbleDragOn) return;
+    const pt = e.touches ? e.touches[0] : e;
+    const dx = pt.clientX - bubbleDragStartX;
+    const dy = pt.clientY - bubbleDragStartY;
+    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) bubbleDragged = true;
+    const newLeft = Math.max(8, bubbleStartLeft + dx);
+    const newTop = Math.max(8, bubbleStartTop + dy);
+    bubbleCustomPos = { x: newLeft, y: newTop };
+    positionBubble();
+  }
+
+  function onBubbleDragEnd() {
+    bubbleDragOn = false;
+    bubble.style.cursor = "grab";
+  }
+
+  bubble.addEventListener("mousedown", onBubbleDragStart);
+  window.addEventListener("mousemove", onBubbleDragMove);
+  window.addEventListener("mouseup", onBubbleDragEnd);
+  bubble.addEventListener("touchstart", onBubbleDragStart, { passive: true });
+  window.addEventListener("touchmove", onBubbleDragMove, { passive: true });
+  window.addEventListener("touchend", onBubbleDragEnd);
+
+  // -----------------------------
+  // Drag to move (avatar)
+  // -----------------------------
+  let dragOn = false;
+  let dragStartX = 0;
+  let dragStartY = 0;
+  let startRight = CFG.avatarPos.right;
+  let startBottom = CFG.avatarPos.bottom;
+
+  function onDragStart(e) {
+    if (e.target === input || e.target === askBtn) return;
+    dragOn = true;
+    const pt = e.touches ? e.touches[0] : e;
+    dragStartX = pt.clientX;
+    dragStartY = pt.clientY;
+    startRight = parseFloat(shell.style.right || CFG.avatarPos.right);
+    startBottom = parseFloat(shell.style.bottom || CFG.avatarPos.bottom);
+  }
+
+  function onDragMove(e) {
+    if (!dragOn) return;
+    const pt = e.touches ? e.touches[0] : e;
+    const dx = pt.clientX - dragStartX;
+    const dy = pt.clientY - dragStartY;
+    const newRight = Math.max(0, startRight - dx);
+    const newBottom = Math.max(0, startBottom - dy);
+    shell.style.right = `${newRight}px`;
+    shell.style.bottom = `${newBottom}px`;
+    if (bubble.style.display !== "none") positionBubble();
+  }
+
+  function onDragEnd() {
+    dragOn = false;
+  }
+
+  shell.addEventListener("mousedown", onDragStart);
+  window.addEventListener("mousemove", onDragMove);
+  window.addEventListener("mouseup", onDragEnd);
+  shell.addEventListener("touchstart", onDragStart, { passive: true });
+  window.addEventListener("touchmove", onDragMove, { passive: true });
+  window.addEventListener("touchend", onDragEnd);
+
+  // -----------------------------
+  // Drag to move (ask UI only)
+  // -----------------------------
+  let uiDragOn = false;
+  let uiDragStartX = 0;
+  let uiDragStartY = 0;
+  let uiStartRight = CFG.inputPos.right;
+  let uiStartBottom = CFG.inputPos.bottom;
+
+  function onUiDragStart(e) {
+    if (e.target === input || e.target === askBtn) return;
+    uiDragOn = true;
+    const pt = e.touches ? e.touches[0] : e;
+    uiDragStartX = pt.clientX;
+    uiDragStartY = pt.clientY;
+    uiStartRight = parseFloat(uiShell.style.right || CFG.inputPos.right);
+    uiStartBottom = parseFloat(uiShell.style.bottom || CFG.inputPos.bottom);
+  }
+
+  function onUiDragMove(e) {
+    if (!uiDragOn) return;
+    const pt = e.touches ? e.touches[0] : e;
+    const dx = pt.clientX - uiDragStartX;
+    const dy = pt.clientY - uiDragStartY;
+    const newRight = Math.max(0, uiStartRight - dx);
+    const newBottom = Math.max(0, uiStartBottom - dy);
+    uiShell.style.right = `${newRight}px`;
+    uiShell.style.bottom = `${newBottom}px`;
+  }
+
+  function onUiDragEnd() {
+    uiDragOn = false;
+  }
+
+  uiShell.addEventListener("mousedown", onUiDragStart);
+  window.addEventListener("mousemove", onUiDragMove);
+  window.addEventListener("mouseup", onUiDragEnd);
+  uiShell.addEventListener("touchstart", onUiDragStart, { passive: true });
+  window.addEventListener("touchmove", onUiDragMove, { passive: true });
+  window.addEventListener("touchend", onUiDragEnd);
+
 })();
