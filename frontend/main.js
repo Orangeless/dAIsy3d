@@ -17,7 +17,8 @@
     avatarHeight: 848,
 
     // Visual size on screen (only knob you touch)
-    avatarUIScale: 0.4,
+    avatarUIScale: 0.82,
+    avatarFollowInput: true,
 
     avatarPos: { right: 32, bottom: 92 },
     inputPos: { right: 32, bottom: 18 },
@@ -29,6 +30,11 @@
     bubbleMaxWidth: 360,
     bubbleMaxHeight: 220,
     uiMaxWidth: 380,
+    avatarDockOffsetY: -372,
+    avatarDockOffsetX: -90,
+    avatarDockMinRight: -320,
+    avatarMinBottom: -640,
+    avatarMinRight: -2000,
 
     idleMainEverySecondsMin: 30,
     idleMainEverySecondsMax: 60,
@@ -38,16 +44,28 @@
     idleRareDurationSecondsMin: 5,
     idleRareDurationSecondsMax: 5,
 
-    // Canonical idle video (used for STILL + animation)
-    idleMainVideo: "assets/video/idle_main1.mp4",
+    // Canonical idle clip (used for STILL + animation)
+    idleMainVideo: "assets/anim/Standing_Idle.fbx",
 
-    idleRareVideos: [
-      "assets/video/idle1.mp4",
-      "assets/video/idle2.mp4",
-    ],
+    idleRareVideos: [],
 
     videos: {
-      talkingMid: ["assets/video/talking_mid.mp4"],
+      talkingMid: ["assets/anim/Standing_Idle.fbx"],
+    },
+    resultAnimation: "assets/anim/Pointing.fbx",
+    resultCrossfadeMs: 110,
+    greetingAnimation: "assets/anim/greeting.fbx",
+    carriedAnimation: "assets/anim/carried.fbx",
+    standUpAnimation: "assets/anim/Standing Up.fbx",
+    dragCrossfadeMs: 70,
+    standToIdleCrossfadeMs: 180,
+    carriedLoopFrames: 20,
+    carriedLoopFps: 30,
+    characterTextures: {
+      baseColor: "assets/anim/Meshy_AI_Emerald_Elegance_0216113256_texture.png",
+      normal: "assets/anim/Meshy_AI_Emerald_Elegance_0216113256_texture_normal.png",
+      roughness: "assets/anim/Meshy_AI_Emerald_Elegance_0216113256_texture_roughness.png",
+      metalness: "assets/anim/Meshy_AI_Emerald_Elegance_0216113256_texture_metallic.png",
     },
 
     videoReadyTimeoutMs: 2500,
@@ -59,8 +77,10 @@
   // Helpers
   // -----------------------------
   const nowMs = () => Date.now();
+  const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const randMs = (a, b) => (Math.random() * (b - a) + a) * 1000;
-  const resolveAsset = (p) => CFG.assetsBase + p;
+  const resolveAsset = (p) => `${CFG.assetsBase}${p || ""}`.replace(/ /g, "%20");
+  const isFbxAsset = (p) => /\.fbx$/i.test(p || "");
 
   const pickClip = (arr) => (arr && arr.length ? arr[Math.floor(Math.random() * arr.length)] : null);
 
@@ -114,9 +134,14 @@
   const frame = document.createElement("div");
   frame.className = "eyeai-frame";
 
+  let avatarFollowInput = !!CFG.avatarFollowInput;
+  let avatarManuallyMoved = false;
+  let ctrlDown = false;
+
   const dragHint = document.createElement("div");
   dragHint.className = "eyeai-drag-hint";
-  dragHint.textContent = "Drag me";
+  dragHint.textContent = avatarFollowInput ? "Ctrl+Drag to move" : "Drag me";
+  dragHint.style.display = "none";
 
   const closeBtn = document.createElement("button");
   closeBtn.className = "eyeai-close";
@@ -131,7 +156,9 @@
   idleStill.autoplay = false;
   idleStill.loop = false;
   idleStill.preload = "auto";
-  idleStill.src = resolveAsset(CFG.idleMainVideo);
+  if (!isFbxAsset(CFG.idleMainVideo)) {
+    idleStill.src = resolveAsset(CFG.idleMainVideo);
+  }
 
   // Active animation video
   const animVideo = document.createElement("video");
@@ -144,8 +171,19 @@
   animVideo.setAttribute("playsinline", "");
   animVideo.style.display = "none";
 
+  // 3D layer (used for FBX clips)
+  const threeLayer = document.createElement("canvas");
+  threeLayer.className = "eyeai-layer";
+  threeLayer.style.display = "none";
+  threeLayer.style.opacity = "1";
+  threeLayer.style.transition = "opacity 240ms ease";
+  threeLayer.style.pointerEvents = "auto";
+  threeLayer.style.touchAction = "none";
+  threeLayer.style.cursor = "grab";
+
   vtuber.appendChild(idleStill);
   vtuber.appendChild(animVideo);
+  vtuber.appendChild(threeLayer);
   vtuber.appendChild(frame);
   vtuber.appendChild(dragHint);
 
@@ -166,9 +204,15 @@
   const askBtn = document.createElement("button");
   askBtn.className = "eyeai-btn";
   askBtn.textContent = "Ask";
+  const standBtn = document.createElement("button");
+  standBtn.className = "eyeai-btn eyeai-stand-btn";
+  standBtn.type = "button";
+  standBtn.textContent = "Stand Up";
+  standBtn.style.display = "none";
 
   ui.appendChild(input);
   ui.appendChild(askBtn);
+  ui.appendChild(standBtn);
 
   uiShell.appendChild(ui);
 
@@ -190,16 +234,32 @@
   bubble.appendChild(bubbleCollapsed);
 
   shell.appendChild(vtuber);
-  shell.appendChild(closeBtn);
+  closeBtn.style.display = "none";
 
   root.appendChild(shell);
   root.appendChild(uiShell);
   root.appendChild(bubble);
   document.body.appendChild(root);
+  let startupSequenceActive = false;
+
+  function syncAvatarToUi() {
+    if (!avatarFollowInput) return;
+    const rect = uiShell.getBoundingClientRect();
+    const minDockRight = Number.isFinite(CFG.avatarDockMinRight) ? CFG.avatarDockMinRight : -320;
+    const right = Math.max(minDockRight, window.innerWidth - rect.right + (CFG.avatarDockOffsetX || 0));
+    const minBottom = Number.isFinite(CFG.avatarMinBottom) ? CFG.avatarMinBottom : -260;
+    const bottom = Math.max(minBottom, window.innerHeight - rect.top + 2 + (CFG.avatarDockOffsetY || 0));
+    shell.style.right = `${right}px`;
+    shell.style.bottom = `${bottom}px`;
+  }
+  syncAvatarToUi();
+  requestAnimationFrame(syncAvatarToUi);
 
   // Ensure the idle still frame is loaded and visible on startup
   idleStill.load();
-  holdIdleStill(CFG.idleMainVideo);
+  queueMicrotask(() => {
+    runStartupSequence();
+  });
 
   // -----------------------------
   // Idle still setup
@@ -215,9 +275,370 @@
   // Video helpers
   // -----------------------------
   let animTimeHandler = null;
+  const threeState = {
+    ready: false,
+    failed: false,
+    initPromise: null,
+    THREE: null,
+    FBXLoader: null,
+    SkeletonUtils: null,
+    renderer: null,
+    scene: null,
+    camera: null,
+    loader: null,
+    mixer: null,
+    clock: null,
+    currentRoot: null,
+    currentAction: null,
+    currentDurationMs: 5000,
+    clipCache: new Map(),
+    textureLoader: null,
+    textureCache: new Map(),
+    controls: null,
+    orbiting: false,
+    playRange: null,
+    rafId: 0,
+  };
+
+  async function loadTextureCached(src) {
+    if (!src || !threeState.textureLoader || !threeState.THREE) return null;
+    const key = resolveAsset(src);
+    if (threeState.textureCache.has(key)) return threeState.textureCache.get(key);
+    const texture = await threeState.textureLoader.loadAsync(key);
+    texture.wrapS = threeState.THREE.RepeatWrapping;
+    texture.wrapT = threeState.THREE.RepeatWrapping;
+    texture.generateMipmaps = true;
+    texture.minFilter = threeState.THREE.LinearMipmapLinearFilter;
+    texture.magFilter = threeState.THREE.LinearFilter;
+    const maxAniso = threeState.renderer?.capabilities?.getMaxAnisotropy?.() || 1;
+    texture.anisotropy = Math.min(8, maxAniso);
+    texture.needsUpdate = true;
+    threeState.textureCache.set(key, texture);
+    return texture;
+  }
+
+  function fitCameraToModel(root) {
+    const THREE = threeState.THREE;
+    if (!THREE || !root) return;
+    const initialBox = new THREE.Box3().setFromObject(root);
+    if (initialBox.isEmpty()) return;
+    const initialSize = initialBox.getSize(new THREE.Vector3());
+    const srcHeight = Math.max(0.001, initialSize.y || 0.001);
+    const targetHeight = CFG.avatarHeight * 0.9;
+    const autoScale = targetHeight / srcHeight;
+    root.scale.multiplyScalar(autoScale);
+
+    const box = new THREE.Box3().setFromObject(root);
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+    root.position.x -= center.x;
+    root.position.y -= center.y;
+    root.position.z -= center.z;
+
+    const fitHeight = Math.max(1, size.y * 1.5);
+    const fitWidth = Math.max(1, size.x * 1.6);
+    const fov = THREE.MathUtils.degToRad(threeState.camera.fov);
+    const camZHeight = Math.abs((fitHeight * 0.5) / Math.tan(fov / 2));
+    const fovH = 2 * Math.atan(Math.tan(fov / 2) * threeState.camera.aspect);
+    const camZWidth = Math.abs((fitWidth * 0.5) / Math.tan(fovH / 2));
+    let camZ = Math.max(camZHeight, camZWidth) * 1.4;
+    const maxDim = Math.max(size.x, size.y, size.z, 1);
+    threeState.camera.near = Math.max(0.05, camZ / 280);
+    threeState.camera.far = Math.max(1200, camZ * 10);
+    threeState.camera.updateProjectionMatrix();
+    threeState.camera.position.set(0, 0, camZ);
+    const targetY = -maxDim * 0.08;
+    threeState.camera.lookAt(0, targetY, 0);
+    if (threeState.controls) {
+      threeState.controls.target.set(0, targetY, 0);
+      threeState.controls.minDistance = camZ * 0.45;
+      threeState.controls.maxDistance = camZ * 2.8;
+      threeState.controls.update();
+    }
+  }
+
+  function renderThreeLoop() {
+    if (!threeState.ready) return;
+    const delta = Math.min(0.05, threeState.clock.getDelta());
+    if (threeState.mixer) threeState.mixer.update(delta);
+    if (threeState.currentAction && threeState.playRange) {
+      const { startSec, endSec, loop } = threeState.playRange;
+      if (endSec > startSec + 0.001 && threeState.currentAction.time >= endSec) {
+        if (loop) {
+          threeState.currentAction.time = startSec;
+        } else {
+          threeState.currentAction.paused = true;
+          if (carriedMode && !carriedReachedHoldPose) {
+            carriedReachedHoldPose = true;
+            standBtn.style.display = "inline-flex";
+          }
+        }
+      }
+    }
+    if (threeState.controls) threeState.controls.update();
+    threeState.renderer.render(threeState.scene, threeState.camera);
+    threeState.rafId = requestAnimationFrame(renderThreeLoop);
+  }
+
+  function startThreeLoop() {
+    if (!threeState.ready || threeState.rafId) return;
+    threeState.clock.start();
+    threeState.rafId = requestAnimationFrame(renderThreeLoop);
+  }
+
+  async function ensureThreeReady() {
+    if (threeState.ready) return true;
+    if (threeState.failed) return false;
+    if (threeState.initPromise) return threeState.initPromise;
+
+    threeState.initPromise = (async () => {
+      try {
+        const THREE = await import("https://esm.sh/three@0.160.0");
+        const { FBXLoader } = await import("https://esm.sh/three@0.160.0/examples/jsm/loaders/FBXLoader.js");
+        const SkeletonUtils = await import("https://esm.sh/three@0.160.0/examples/jsm/utils/SkeletonUtils.js");
+        const { OrbitControls } = await import("https://esm.sh/three@0.160.0/examples/jsm/controls/OrbitControls.js");
+
+        threeState.THREE = THREE;
+        threeState.FBXLoader = FBXLoader;
+        threeState.SkeletonUtils = SkeletonUtils;
+
+        const renderer = new THREE.WebGLRenderer({
+          canvas: threeLayer,
+          alpha: true,
+          antialias: true,
+          logarithmicDepthBuffer: true,
+        });
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+        renderer.setSize(CFG.avatarWidth, CFG.avatarHeight, false);
+        renderer.setClearColor(0x000000, 0);
+        renderer.sortObjects = true;
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.08;
+
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(30, CFG.avatarWidth / CFG.avatarHeight, 0.1, 2000);
+        camera.position.set(0, 85, 260);
+        camera.lookAt(0, 80, 0);
+        const controls = new OrbitControls(camera, threeLayer);
+        controls.enablePan = false;
+        controls.enableZoom = true;
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.08;
+        controls.rotateSpeed = 0.65;
+        controls.zoomSpeed = 0.85;
+        controls.target.set(0, 0, 0);
+        controls.minPolarAngle = 0.2;
+        controls.maxPolarAngle = Math.PI - 0.2;
+        controls.addEventListener("start", () => {
+          threeState.orbiting = true;
+          threeLayer.style.cursor = "grabbing";
+        });
+        controls.addEventListener("end", () => {
+          threeState.orbiting = false;
+          threeLayer.style.cursor = "grab";
+        });
+        controls.enabled = !ctrlDown;
+
+        const hemi = new THREE.HemisphereLight(0xfff2df, 0x7a5f4a, 0.95);
+        scene.add(hemi);
+        const ambient = new THREE.AmbientLight(0xfff6eb, 0.18);
+        scene.add(ambient);
+        const key = new THREE.DirectionalLight(0xfff1e0, 1.45);
+        key.position.set(3, 7, 6);
+        scene.add(key);
+        const fill = new THREE.DirectionalLight(0xfff8f0, 0.5);
+        fill.position.set(-4, 2, -3);
+        scene.add(fill);
+        const rim = new THREE.DirectionalLight(0xffe7d0, 0.32);
+        rim.position.set(0, 5, -6);
+        scene.add(rim);
+
+        threeState.renderer = renderer;
+        threeState.scene = scene;
+        threeState.camera = camera;
+        threeState.loader = new FBXLoader();
+        threeState.textureLoader = new THREE.TextureLoader();
+        threeState.clock = new THREE.Clock();
+        threeState.controls = controls;
+        threeState.ready = true;
+        startThreeLoop();
+        return true;
+      } catch (err) {
+        console.warn("FBX runtime unavailable, falling back to video mode", err);
+        threeState.failed = true;
+        return false;
+      }
+    })();
+
+    return threeState.initPromise;
+  }
+
+  async function loadFbxClip(src) {
+    const key = resolveAsset(src);
+    let cached = threeState.clipCache.get(key);
+    if (!cached) {
+      cached = await threeState.loader.loadAsync(key);
+      threeState.clipCache.set(key, cached);
+    }
+    const clone = (threeState.SkeletonUtils.clone || ((obj) => obj.clone(true)))(cached);
+    const clips = (cached.animations && cached.animations.length ? cached.animations : clone.animations) || [];
+    const clip = clips[0] || null;
+    const durationMs = clip ? Math.max(1000, Math.round(clip.duration * 1000)) : 5000;
+    const texCfg = CFG.characterTextures || {};
+    const [baseColorTex, normalTex, roughnessTex, metalnessTex] = await Promise.all([
+      loadTextureCached(texCfg.baseColor),
+      loadTextureCached(texCfg.normal),
+      loadTextureCached(texCfg.roughness),
+      loadTextureCached(texCfg.metalness),
+    ]);
+    if (baseColorTex && threeState.THREE?.SRGBColorSpace) {
+      baseColorTex.colorSpace = threeState.THREE.SRGBColorSpace;
+    }
+    if (normalTex && threeState.THREE?.NoColorSpace) normalTex.colorSpace = threeState.THREE.NoColorSpace;
+    if (roughnessTex && threeState.THREE?.NoColorSpace) roughnessTex.colorSpace = threeState.THREE.NoColorSpace;
+    if (metalnessTex && threeState.THREE?.NoColorSpace) metalnessTex.colorSpace = threeState.THREE.NoColorSpace;
+    let hasRenderableMesh = false;
+    clone.traverse((obj) => {
+      if (!obj || (!obj.isMesh && !obj.isSkinnedMesh)) return;
+      hasRenderableMesh = true;
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+      for (const mat of mats) {
+        if (!mat) continue;
+        if (baseColorTex) mat.map = baseColorTex;
+        if (normalTex) mat.normalMap = normalTex;
+        if (roughnessTex) mat.roughnessMap = roughnessTex;
+        if (metalnessTex) mat.metalnessMap = metalnessTex;
+        if (normalTex) mat.normalScale?.set?.(1, 1);
+        if (roughnessTex) mat.roughness = 1;
+        if (metalnessTex) mat.metalness = 1;
+        if (mat.map) mat.map.needsUpdate = true;
+        if (mat.normalMap) mat.normalMap.needsUpdate = true;
+        if (mat.roughnessMap) mat.roughnessMap.needsUpdate = true;
+        if (mat.metalnessMap) mat.metalnessMap.needsUpdate = true;
+        if (mat.map && threeState.THREE?.SRGBColorSpace) mat.map.colorSpace = threeState.THREE.SRGBColorSpace;
+        if (mat.emissiveMap && threeState.THREE?.SRGBColorSpace) {
+          mat.emissiveMap.colorSpace = threeState.THREE.SRGBColorSpace;
+        }
+        if (mat.color && mat.color.setRGB) mat.color.setRGB(1, 1, 1);
+        mat.needsUpdate = true;
+      }
+    });
+    if (!hasRenderableMesh) {
+      throw new Error(`FBX has animation data but no renderable mesh: ${src}`);
+    }
+    return { root: clone, clip, durationMs };
+  }
+
+  function stopFbx() {
+    if (!threeState.ready) return;
+    if (threeState.currentAction) {
+      threeState.currentAction.stop();
+      threeState.currentAction = null;
+    }
+    if (threeState.currentRoot) {
+      threeState.scene.remove(threeState.currentRoot);
+      threeState.currentRoot = null;
+    }
+    threeState.mixer = null;
+    threeState.playRange = null;
+    threeState.currentDurationMs = 5000;
+    threeLayer.style.display = "none";
+  }
+
+  async function playFbx(src, loop = true, opts = {}) {
+    const ready = await ensureThreeReady();
+    if (!ready) return false;
+    try {
+      const { root, clip, durationMs } = await loadFbxClip(src);
+      stopFbx();
+      threeState.scene.add(root);
+      fitCameraToModel(root);
+      threeState.currentRoot = root;
+      threeState.currentDurationMs = durationMs;
+      threeState.mixer = new threeState.THREE.AnimationMixer(root);
+      if (clip) {
+        const clipDuration = Math.max(0.001, clip.duration || 0.001);
+        let startSec = Math.max(0, Number(opts.rangeStartSec) || 0);
+        let endSec = Math.min(clipDuration, Number(opts.rangeEndSec) || clipDuration);
+        if (opts.halfOnly) {
+          const frames = Math.max(1, Number(CFG.carriedLoopFrames) || 5);
+          const fps = Math.max(1, Number(CFG.carriedLoopFps) || 30);
+          const frameWindowSec = frames / fps;
+          startSec = 0;
+          endSec = Math.min(clipDuration, frameWindowSec);
+        }
+        if (endSec <= startSec + 0.001) {
+          startSec = 0;
+          endSec = clipDuration;
+        }
+        threeState.playRange = { startSec, endSec, loop };
+        const action = threeState.mixer.clipAction(clip);
+        action.reset();
+        action.clampWhenFinished = !loop;
+        action.setLoop(loop ? threeState.THREE.LoopRepeat : threeState.THREE.LoopOnce, loop ? Infinity : 1);
+        action.time = startSec;
+        action.play();
+        threeState.currentAction = action;
+      } else {
+        threeState.playRange = null;
+      }
+      animVideo.style.display = "none";
+      idleStill.style.display = "none";
+      threeLayer.style.display = "block";
+      startThreeLoop();
+      return true;
+    } catch (err) {
+      console.warn("FBX play failed", err);
+      return false;
+    }
+  }
+
+  async function crossfadeToFbx(src, loop = true, playOpts = {}) {
+    const ms = Math.max(60, Number(playOpts.fadeMs) || Number(CFG.dragCrossfadeMs) || 240);
+    threeLayer.style.transition = `opacity ${ms}ms ease`;
+    threeLayer.style.opacity = "0";
+    await sleepMs(Math.round(ms * 0.55));
+    const ok = await playFbx(src, loop, playOpts);
+    if (!ok) {
+      threeLayer.style.opacity = "1";
+      return false;
+    }
+    threeLayer.style.opacity = "0";
+    requestAnimationFrame(() => {
+      threeLayer.style.opacity = "1";
+    });
+    await sleepMs(ms);
+    return true;
+  }
+
+  async function runStartupSequence() {
+    startupSequenceActive = true;
+    try {
+      const greeting = CFG.greetingAnimation;
+      if (greeting && isFbxAsset(greeting)) {
+        const played = await playFbx(greeting, false);
+        if (played) {
+          const duration = Math.max(300, threeState.currentDurationMs || 1200);
+          await sleepMs(duration);
+          const faded = await crossfadeToFbx(CFG.idleMainVideo, true);
+          if (!faded) {
+            await holdIdleStill(CFG.idleMainVideo);
+          }
+          return;
+        }
+      }
+      await holdIdleStill(CFG.idleMainVideo);
+    } finally {
+      startupSequenceActive = false;
+    }
+  }
 
   async function playVideo(src, loop = true) {
+    if (isFbxAsset(src)) return playFbx(src, loop);
     if (document.visibilityState === "hidden") return;
+    stopFbx();
+    idleStill.style.display = "none";
     animVideo.src = resolveAsset(src);
     animVideo.loop = loop;
     if (animTimeHandler) {
@@ -245,13 +666,20 @@
   }
 
   async function holdIdleStill(src) {
+    if (isFbxAsset(src)) {
+      await playFbx(src, true);
+      return;
+    }
     try {
+      stopFbx();
       idleStillHold = true;
       idleStill.src = resolveAsset(src);
       await waitForMetadata(idleStill);
       const last = Math.max(0, (idleStill.duration || 0) - 0.05);
       idleStill.currentTime = last;
       idleStill.pause();
+      idleStill.style.display = "block";
+      animVideo.style.display = "none";
     } catch {
       // no-op
     }
@@ -315,6 +743,13 @@
 
   async function playLoopFor(src, ms) {
     if (!src) return false;
+    if (isFbxAsset(src)) {
+      const ok = await playFbx(src, true);
+      if (!ok) return false;
+      await new Promise((resolve) => setTimeout(resolve, ms));
+      return true;
+    }
+    stopFbx();
     stopVideo();
     animVideo.src = resolveAsset(src);
     animVideo.loop = true;
@@ -347,15 +782,87 @@
   let activeHighlights = [];
   let bubbleCustomPos = null;
   let idlePlaying = false;
+  let carriedMode = false;
+  let carriedToken = 0;
+  let carriedReachedHoldPose = false;
 
-  function releaseToIdle() {
-    stopVideo();
+  async function enterCarriedMode() {
+    if (carriedMode) return;
+    carriedMode = true;
+    carriedReachedHoldPose = false;
+    standBtn.style.display = "none";
+    animationHold = true;
+    until = 0;
+    const myToken = ++carriedToken;
+    const clip = CFG.carriedAnimation || CFG.idleMainVideo;
+    const ok = await crossfadeToFbx(clip, false);
+    if (!ok && carriedToken === myToken) {
+      carriedMode = false;
+      releaseToIdle();
+      standBtn.style.display = "none";
+      return;
+    }
+  }
+
+  async function cancelCarriedModeEarly() {
+    if (!carriedMode) return;
+    carriedMode = false;
+    carriedReachedHoldPose = false;
+    standBtn.style.display = "none";
+    const myToken = ++carriedToken;
+    await crossfadeToFbx(CFG.idleMainVideo, true, { fadeMs: Math.max(90, Number(CFG.dragCrossfadeMs) || 90) });
+    if (carriedToken !== myToken) return;
     animationHold = false;
     until = 0;
     nextIdle = nowMs() + 3000;
   }
 
+  async function exitCarriedMode() {
+    if (!carriedMode) return;
+    carriedMode = false;
+    carriedReachedHoldPose = false;
+    standBtn.style.display = "none";
+    const myToken = ++carriedToken;
+    const standUp = CFG.standUpAnimation;
+    if (standUp && isFbxAsset(standUp)) {
+      const bridgeOk = await crossfadeToFbx(standUp, false, {
+        fadeMs: Math.max(120, Number(CFG.dragCrossfadeMs) || 120),
+      });
+      if (carriedToken !== myToken) return;
+      if (bridgeOk) {
+        const dur = Math.max(250, threeState.currentDurationMs || 900);
+        const blendLead = Math.max(80, Number(CFG.standToIdleCrossfadeMs) || 180);
+        await sleepMs(Math.max(0, dur - blendLead));
+      }
+    }
+    if (carriedToken !== myToken) return;
+    const ok = await crossfadeToFbx(CFG.idleMainVideo, true, {
+      fadeMs: Math.max(120, Number(CFG.standToIdleCrossfadeMs) || 180),
+    });
+    if (carriedToken !== myToken) return;
+    if (!ok) {
+      releaseToIdle();
+      return;
+    }
+    animationHold = false;
+    until = 0;
+    nextIdle = nowMs() + 3000;
+  }
+
+  function releaseToIdle() {
+    stopVideo();
+    carriedMode = false;
+    carriedReachedHoldPose = false;
+    carriedToken += 1;
+    standBtn.style.display = "none";
+    animationHold = false;
+    until = 0;
+    nextIdle = nowMs() + 3000;
+    holdIdleStill(CFG.idleMainVideo);
+  }
+
   async function tick() {
+    if (startupSequenceActive) return;
     if (animationHold) return;
     const t = nowMs();
     if (t < until) return;
@@ -364,6 +871,24 @@
       if (idlePlaying) return;
       idlePlaying = true;
       const clip = idlePool[Math.floor(Math.random() * idlePool.length)];
+      if (isFbxAsset(clip)) {
+        try {
+          const played = await playFbx(clip, false);
+          if (!played) {
+            nextIdle = t + 5000;
+            return;
+          }
+          const durMs = Math.max(1000, threeState.currentDurationMs || 5000);
+          await new Promise((resolve) => setTimeout(resolve, durMs));
+          await holdIdleStill(CFG.idleMainVideo);
+          until = t + durMs;
+          nextIdle = t + randMs(CFG.idleMainEverySecondsMin, CFG.idleMainEverySecondsMax);
+          return;
+        } finally {
+          idlePlaying = false;
+        }
+      }
+      stopFbx();
       stopVideo();
       animVideo.src = resolveAsset(clip);
       animVideo.loop = false;
@@ -892,12 +1417,24 @@
           quoteHit = highlightQuotes([fallbackQuote], durationMs);
         }
       }
-      const midClip = pickClip(CFG.videos?.talkingMid);
+      const resultClip = CFG.resultAnimation || pickClip(CFG.videos?.talkingMid);
+      const fadeMs = Math.max(60, Number(CFG.resultCrossfadeMs) || 110);
 
-      const midMs = Math.max(2000, durationMs);
-
-      if (midClip) {
-        await playLoopFor(midClip, midMs);
+      if (resultClip && isFbxAsset(resultClip)) {
+        const entered = await crossfadeToFbx(resultClip, false, { fadeMs });
+        if (!entered) {
+          releaseToIdle();
+          return;
+        }
+        if (talkToken !== myToken) return;
+        const playMs = Math.max(240, threeState.currentDurationMs || 1000);
+        await sleepMs(playMs);
+        if (talkToken !== myToken) return;
+        await crossfadeToFbx(CFG.idleMainVideo, true, { fadeMs });
+        releaseToIdle();
+      } else if (resultClip) {
+        const midMs = Math.max(2000, durationMs);
+        await playLoopFor(resultClip, midMs);
         if (talkToken !== myToken) return;
         await holdIdleStill(CFG.idleMainVideo);
         releaseToIdle();
@@ -920,6 +1457,7 @@
   });
 
   window.addEventListener("resize", () => {
+    syncAvatarToUi();
     if (bubble.style.display !== "none") positionBubble();
   });
 
@@ -928,6 +1466,23 @@
       stopVideo();
       animationHold = false;
     }
+  });
+  window.addEventListener("keydown", (e) => {
+    if (e.key !== "Control") return;
+    ctrlDown = true;
+    if (threeState.controls) threeState.controls.enabled = false;
+  });
+  window.addEventListener("keyup", (e) => {
+    if (e.key !== "Control") return;
+    ctrlDown = false;
+    if (!avatarManuallyMoved) {
+      avatarFollowInput = true;
+      syncAvatarToUi();
+    }
+    if (!dragOn && carriedMode && !carriedReachedHoldPose) {
+      cancelCarriedModeEarly();
+    }
+    if (threeState.controls) threeState.controls.enabled = !dragOn;
   });
 
   // -----------------------------
@@ -985,7 +1540,15 @@
   let startBottom = CFG.avatarPos.bottom;
 
   function onDragStart(e) {
+    if (e.target === threeLayer && !ctrlDown) return;
+    if (threeState.orbiting && !ctrlDown) return;
+    if (avatarFollowInput && !ctrlDown) return;
     if (e.target === input || e.target === askBtn) return;
+    if (ctrlDown) {
+      avatarFollowInput = false;
+      if (threeState.controls) threeState.controls.enabled = false;
+      enterCarriedMode();
+    }
     dragOn = true;
     const pt = e.touches ? e.touches[0] : e;
     dragStartX = pt.clientX;
@@ -999,23 +1562,36 @@
     const pt = e.touches ? e.touches[0] : e;
     const dx = pt.clientX - dragStartX;
     const dy = pt.clientY - dragStartY;
-    const newRight = Math.max(0, startRight - dx);
-    const newBottom = Math.max(0, startBottom - dy);
+    const minRight = Number.isFinite(CFG.avatarMinRight) ? CFG.avatarMinRight : -2000;
+    const newRight = Math.max(minRight, startRight - dx);
+    const minBottom = Number.isFinite(CFG.avatarMinBottom) ? CFG.avatarMinBottom : -260;
+    const newBottom = Math.max(minBottom, startBottom - dy);
     shell.style.right = `${newRight}px`;
     shell.style.bottom = `${newBottom}px`;
+    avatarManuallyMoved = true;
     if (bubble.style.display !== "none") positionBubble();
   }
 
   function onDragEnd() {
     dragOn = false;
+    if (carriedMode && !carriedReachedHoldPose) {
+      cancelCarriedModeEarly();
+    }
+    if (avatarFollowInput) syncAvatarToUi();
+    if (threeState.controls) threeState.controls.enabled = !ctrlDown;
   }
 
   shell.addEventListener("mousedown", onDragStart);
+  threeLayer.addEventListener("mousedown", onDragStart);
   window.addEventListener("mousemove", onDragMove);
   window.addEventListener("mouseup", onDragEnd);
   shell.addEventListener("touchstart", onDragStart, { passive: true });
+  threeLayer.addEventListener("touchstart", onDragStart, { passive: true });
   window.addEventListener("touchmove", onDragMove, { passive: true });
   window.addEventListener("touchend", onDragEnd);
+  standBtn.addEventListener("click", async () => {
+    await exitCarriedMode();
+  });
 
   // -----------------------------
   // Drag to move (ask UI only)
@@ -1045,6 +1621,7 @@
     const newBottom = Math.max(0, uiStartBottom - dy);
     uiShell.style.right = `${newRight}px`;
     uiShell.style.bottom = `${newBottom}px`;
+    syncAvatarToUi();
   }
 
   function onUiDragEnd() {
