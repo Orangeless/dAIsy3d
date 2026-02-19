@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node:*)",
+      "Bash(\"c:/Users/markz/Documents/dAIsy3D/delete_blocks.js\":*)"
+    ]
+  }
+}

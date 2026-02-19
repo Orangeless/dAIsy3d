@@ -158,7 +158,7 @@ app.post("/api/ask", async (req, res) => {
 
     const messages = buildMessages(pageText, question);
 
-    const response = await fetch(HF_CHAT_URL, {
+    let response = await fetch(HF_CHAT_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -172,10 +172,39 @@ app.post("/api/ask", async (req, res) => {
       }),
     });
 
-    const rawText = await response.text();
+    let rawText = await response.text();
+
+    // If configured model is invalid/unavailable for chat, retry once with a known default model.
+    if (!response.ok && MODEL !== DEFAULT_MODEL && (response.status === 400 || response.status === 404)) {
+      response = await fetch(HF_CHAT_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${HF_TOKEN}`,
+        },
+        body: JSON.stringify({
+          model: DEFAULT_MODEL,
+          messages,
+          max_tokens: 300,
+          temperature: 0.3,
+        }),
+      });
+      rawText = await response.text();
+    }
 
     if (!response.ok) {
-      return res.status(response.status).json({
+      // Degrade gracefully from local page context instead of failing the UI hard.
+      const fallback = deriveAnswerFromPage(pageText, question);
+      if (fallback) {
+        return res.json({
+          answer: fallback,
+          quotes: extractQuotesFromPageText(pageText, fallback),
+          warning: "Upstream model request failed; returned local page-based fallback.",
+          upstreamStatus: response.status,
+        });
+      }
+
+      return res.status(502).json({
         error: "Hugging Face router request failed",
         status: response.status,
         details: rawText,

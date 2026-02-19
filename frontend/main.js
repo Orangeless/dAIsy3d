@@ -1,101 +1,65 @@
-(() => {
-  // =========================================================
-  // EyeAI Injector
-  // FINAL ARCHITECTURE:
-  // - Idle state = paused video frame (NOT PNG)
-  // - Animation state = same video element playing
-  // - Rare idles override temporarily
-  // - UI is scaled WITHOUT touching internal resolution
-  // =========================================================
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { VRMLoaderPlugin } from '@pixiv/three-vrm';
 
-  const CFG = {
-    backendUrl: "http://localhost:3001/api/ask",
-    assetsBase: "",
+// =========================================================
+// EyeAI Injector
+// ARCHITECTURE:
+// - Avatar = VRM model rendered via Three.js canvas
+// - Idle state = breathing + random blink expressions
+// - Talking state = mouth morph (aa/oh) while answer displays
+// - UI is scaled WITHOUT touching internal resolution
+// =========================================================
 
-    // Native resolution (do NOT change)
-    avatarWidth: 640,
-    avatarHeight: 848,
+const CFG = {
+  backendUrl: "http://localhost:3001/api/ask",
+  assetsBase: "",
 
-    // Visual size on screen (only knob you touch)
-    avatarUIScale: 0.82,
-    avatarFollowInput: true,
+  // Canvas size (native resolution)
+  avatarWidth: 640,
+  avatarHeight: 848,
 
-    avatarPos: { right: 32, bottom: 92 },
-    inputPos: { right: 32, bottom: 18 },
+  // Visual size on screen (only knob you touch)
+  avatarUIScale: 0.52,
 
-    bubbleMode: "fixed",
-    bubbleFixed: { x: window.innerWidth - 380 - 18, y: 60 },
-    bubbleOffset: { dx: -360, dy: -140 },
+  avatarPos: { right: 32, bottom: 18 },
+  inputPos: { right: 32, bottom: 18 },
 
-    bubbleMaxWidth: 360,
-    bubbleMaxHeight: 220,
-    uiMaxWidth: 380,
-    avatarDockOffsetY: -372,
-    avatarDockOffsetX: -90,
-    avatarDockMinRight: -320,
-    avatarMinBottom: -640,
-    avatarMinRight: -2000,
+  bubbleMode: "fixed",
+  bubbleFixed: { x: window.innerWidth - 380 - 18, y: 60 },
+  bubbleOffset: { dx: -360, dy: -140 },
 
-    idleMainEverySecondsMin: 30,
-    idleMainEverySecondsMax: 60,
+  bubbleMaxWidth: 360,
+  bubbleMaxHeight: 220,
+  uiMaxWidth: 380,
 
-    idleRareEverySecondsMin: 120,
-    idleRareEverySecondsMax: 240,
-    idleRareDurationSecondsMin: 5,
-    idleRareDurationSecondsMax: 5,
+  highlightMinMs: 3000,
+  highlightMaxMs: 10000,
 
-    // Canonical idle clip (used for STILL + animation)
-    idleMainVideo: "assets/anim/Standing_Idle.fbx",
+  // VRM model path
+  vrmPath: "assets/anim/dAIsy.vrm",
+};
 
-    idleRareVideos: [],
+// -----------------------------
+// Helpers
+// -----------------------------
+const nowMs = () => Date.now();
+const resolveAsset = (p) => CFG.assetsBase + p;
 
-    videos: {
-      talkingMid: ["assets/anim/Standing_Idle.fbx"],
-    },
-    resultAnimation: "assets/anim/Pointing.fbx",
-    resultCrossfadeMs: 110,
-    greetingAnimation: "assets/anim/greeting.fbx",
-    carriedAnimation: "assets/anim/carried.fbx",
-    standUpAnimation: "assets/anim/Standing Up.fbx",
-    dragCrossfadeMs: 70,
-    standToIdleCrossfadeMs: 180,
-    carriedLoopFrames: 20,
-    carriedLoopFps: 30,
-    characterTextures: {
-      baseColor: "assets/anim/Meshy_AI_Emerald_Elegance_0216113256_texture.png",
-      normal: "assets/anim/Meshy_AI_Emerald_Elegance_0216113256_texture_normal.png",
-      roughness: "assets/anim/Meshy_AI_Emerald_Elegance_0216113256_texture_roughness.png",
-      metalness: "assets/anim/Meshy_AI_Emerald_Elegance_0216113256_texture_metallic.png",
-    },
+const estimateTalkMs = (text) => {
+  const words = (text || "").trim().split(/\s+/).filter(Boolean).length;
+  const wpm = 160;
+  const ms = (words / wpm) * 60000;
+  return Math.max(2000, Math.min(15000, Math.round(ms)));
+};
 
-    videoReadyTimeoutMs: 2500,
-    highlightMinMs: 3000,
-    highlightMaxMs: 10000,
-  };
-
-  // -----------------------------
-  // Helpers
-  // -----------------------------
-  const nowMs = () => Date.now();
-  const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  const randMs = (a, b) => (Math.random() * (b - a) + a) * 1000;
-  const resolveAsset = (p) => `${CFG.assetsBase}${p || ""}`.replace(/ /g, "%20");
-  const isFbxAsset = (p) => /\.fbx$/i.test(p || "");
-
-  const pickClip = (arr) => (arr && arr.length ? arr[Math.floor(Math.random() * arr.length)] : null);
-
-  const estimateTalkMs = (text) => {
-    const words = (text || "").trim().split(/\s+/).filter(Boolean).length;
-    const wpm = 160;
-    const ms = (words / wpm) * 60000;
-    return Math.max(2000, Math.min(15000, Math.round(ms)));
-  };
-
-  // -----------------------------
-  // Guard
-  // -----------------------------
-  const ROOT_ID = "eyeai-root";
-  if (document.getElementById(ROOT_ID)) return;
+// -----------------------------
+// Guard
+// -----------------------------
+const ROOT_ID = "eyeai-root";
+if (document.getElementById(ROOT_ID)) {
+  // If already exists, do nothing or cleanup (but usually injector logic stops here)
+} else {
 
   // -----------------------------
   // CSS (external)
@@ -129,61 +93,27 @@
   vtuber.style.height = `${CFG.avatarHeight}px`;
   vtuber.style.transform = `scale(${CFG.avatarUIScale / DPR})`;
   vtuber.style.transformOrigin = "bottom right";
-  vtuber.style.zoom = DPR;
+  vtuber.style.zoom = DPR.toString();
 
   const frame = document.createElement("div");
   frame.className = "eyeai-frame";
 
-  let avatarFollowInput = !!CFG.avatarFollowInput;
-  let avatarManuallyMoved = false;
-  let ctrlDown = false;
-
   const dragHint = document.createElement("div");
   dragHint.className = "eyeai-drag-hint";
-  dragHint.textContent = avatarFollowInput ? "Ctrl+Drag to move" : "Drag me";
-  dragHint.style.display = "none";
+  dragHint.textContent = "Drag me";
 
   const closeBtn = document.createElement("button");
   closeBtn.className = "eyeai-close";
   closeBtn.type = "button";
   closeBtn.textContent = "×";
 
-  // Idle still video (paused)
-  const idleStill = document.createElement("video");
-  idleStill.className = "eyeai-layer";
-  idleStill.muted = true;
-  idleStill.playsInline = true;
-  idleStill.autoplay = false;
-  idleStill.loop = false;
-  idleStill.preload = "auto";
-  if (!isFbxAsset(CFG.idleMainVideo)) {
-    idleStill.src = resolveAsset(CFG.idleMainVideo);
-  }
+  // Three.js canvas
+  const vrmCanvas = document.createElement("canvas");
+  vrmCanvas.className = "eyeai-layer";
+  vrmCanvas.width = CFG.avatarWidth;
+  vrmCanvas.height = CFG.avatarHeight;
 
-  // Active animation video
-  const animVideo = document.createElement("video");
-  animVideo.className = "eyeai-layer";
-  animVideo.muted = true;
-  animVideo.playsInline = true;
-  animVideo.autoplay = false;
-  animVideo.loop = true;
-  animVideo.preload = "auto";
-  animVideo.setAttribute("playsinline", "");
-  animVideo.style.display = "none";
-
-  // 3D layer (used for FBX clips)
-  const threeLayer = document.createElement("canvas");
-  threeLayer.className = "eyeai-layer";
-  threeLayer.style.display = "none";
-  threeLayer.style.opacity = "1";
-  threeLayer.style.transition = "opacity 240ms ease";
-  threeLayer.style.pointerEvents = "auto";
-  threeLayer.style.touchAction = "none";
-  threeLayer.style.cursor = "grab";
-
-  vtuber.appendChild(idleStill);
-  vtuber.appendChild(animVideo);
-  vtuber.appendChild(threeLayer);
+  vtuber.appendChild(vrmCanvas);
   vtuber.appendChild(frame);
   vtuber.appendChild(dragHint);
 
@@ -204,15 +134,9 @@
   const askBtn = document.createElement("button");
   askBtn.className = "eyeai-btn";
   askBtn.textContent = "Ask";
-  const standBtn = document.createElement("button");
-  standBtn.className = "eyeai-btn eyeai-stand-btn";
-  standBtn.type = "button";
-  standBtn.textContent = "Stand Up";
-  standBtn.style.display = "none";
 
   ui.appendChild(input);
   ui.appendChild(askBtn);
-  ui.appendChild(standBtn);
 
   uiShell.appendChild(ui);
 
@@ -234,688 +158,377 @@
   bubble.appendChild(bubbleCollapsed);
 
   shell.appendChild(vtuber);
-  closeBtn.style.display = "none";
+  shell.appendChild(closeBtn);
 
   root.appendChild(shell);
   root.appendChild(uiShell);
   root.appendChild(bubble);
   document.body.appendChild(root);
-  let startupSequenceActive = false;
-
-  function syncAvatarToUi() {
-    if (!avatarFollowInput) return;
-    const rect = uiShell.getBoundingClientRect();
-    const minDockRight = Number.isFinite(CFG.avatarDockMinRight) ? CFG.avatarDockMinRight : -320;
-    const right = Math.max(minDockRight, window.innerWidth - rect.right + (CFG.avatarDockOffsetX || 0));
-    const minBottom = Number.isFinite(CFG.avatarMinBottom) ? CFG.avatarMinBottom : -260;
-    const bottom = Math.max(minBottom, window.innerHeight - rect.top + 2 + (CFG.avatarDockOffsetY || 0));
-    shell.style.right = `${right}px`;
-    shell.style.bottom = `${bottom}px`;
-  }
-  syncAvatarToUi();
-  requestAnimationFrame(syncAvatarToUi);
-
-  // Ensure the idle still frame is loaded and visible on startup
-  idleStill.load();
-  queueMicrotask(() => {
-    runStartupSequence();
-  });
 
   // -----------------------------
-  // Idle still setup
+  // VRM / Three.js setup
   // -----------------------------
-  let idleStillHold = false;
-  idleStill.addEventListener("loadeddata", () => {
-    if (idleStillHold) return;
-    idleStill.currentTime = 0;
-    idleStill.pause();
-  });
+  let vrmModel = null;
+  let vrmMixer = null;
+  let threeRenderer = null;
+  let threeScene = null;
+  let threeCamera = null;
+  let animFrameId = null;
 
-  // -----------------------------
-  // Video helpers
-  // -----------------------------
-  let animTimeHandler = null;
-  const threeState = {
-    ready: false,
-    failed: false,
-    initPromise: null,
-    THREE: null,
-    FBXLoader: null,
-    SkeletonUtils: null,
-    renderer: null,
-    scene: null,
-    camera: null,
-    loader: null,
-    mixer: null,
-    clock: null,
-    currentRoot: null,
-    currentAction: null,
-    currentDurationMs: 5000,
-    clipCache: new Map(),
-    textureLoader: null,
-    textureCache: new Map(),
-    controls: null,
-    orbiting: false,
-    playRange: null,
-    rafId: 0,
-  };
+  // Animation state
+  let isTalking = false;
+  let talkPhase = 0;
+  let blinkTimer = 0;
+  let blinkState = "open"; // "open" | "closing" | "opening"
+  let blinkProgress = 0;
+  let mouthPhase = 0;
+  let lastTimestamp = null;
+  let isPickedUp = false;
 
-  async function loadTextureCached(src) {
-    if (!src || !threeState.textureLoader || !threeState.THREE) return null;
-    const key = resolveAsset(src);
-    if (threeState.textureCache.has(key)) return threeState.textureCache.get(key);
-    const texture = await threeState.textureLoader.loadAsync(key);
-    texture.wrapS = threeState.THREE.RepeatWrapping;
-    texture.wrapT = threeState.THREE.RepeatWrapping;
-    texture.generateMipmaps = true;
-    texture.minFilter = threeState.THREE.LinearMipmapLinearFilter;
-    texture.magFilter = threeState.THREE.LinearFilter;
-    const maxAniso = threeState.renderer?.capabilities?.getMaxAnisotropy?.() || 1;
-    texture.anisotropy = Math.min(8, maxAniso);
-    texture.needsUpdate = true;
-    threeState.textureCache.set(key, texture);
-    return texture;
-  }
-
-  function fitCameraToModel(root) {
-    const THREE = threeState.THREE;
-    if (!THREE || !root) return;
-    const initialBox = new THREE.Box3().setFromObject(root);
-    if (initialBox.isEmpty()) return;
-    const initialSize = initialBox.getSize(new THREE.Vector3());
-    const srcHeight = Math.max(0.001, initialSize.y || 0.001);
-    const targetHeight = CFG.avatarHeight * 0.9;
-    const autoScale = targetHeight / srcHeight;
-    root.scale.multiplyScalar(autoScale);
-
-    const box = new THREE.Box3().setFromObject(root);
-    const size = box.getSize(new THREE.Vector3());
-    const center = box.getCenter(new THREE.Vector3());
-    root.position.x -= center.x;
-    root.position.y -= center.y;
-    root.position.z -= center.z;
-
-    const fitHeight = Math.max(1, size.y * 1.5);
-    const fitWidth = Math.max(1, size.x * 1.6);
-    const fov = THREE.MathUtils.degToRad(threeState.camera.fov);
-    const camZHeight = Math.abs((fitHeight * 0.5) / Math.tan(fov / 2));
-    const fovH = 2 * Math.atan(Math.tan(fov / 2) * threeState.camera.aspect);
-    const camZWidth = Math.abs((fitWidth * 0.5) / Math.tan(fovH / 2));
-    let camZ = Math.max(camZHeight, camZWidth) * 1.4;
-    const maxDim = Math.max(size.x, size.y, size.z, 1);
-    threeState.camera.near = Math.max(0.05, camZ / 280);
-    threeState.camera.far = Math.max(1200, camZ * 10);
-    threeState.camera.updateProjectionMatrix();
-    threeState.camera.position.set(0, 0, camZ);
-    const targetY = -maxDim * 0.08;
-    threeState.camera.lookAt(0, targetY, 0);
-    if (threeState.controls) {
-      threeState.controls.target.set(0, targetY, 0);
-      threeState.controls.minDistance = camZ * 0.45;
-      threeState.controls.maxDistance = camZ * 2.8;
-      threeState.controls.update();
-    }
-  }
-
-  function renderThreeLoop() {
-    if (!threeState.ready) return;
-    const delta = Math.min(0.05, threeState.clock.getDelta());
-    if (threeState.mixer) threeState.mixer.update(delta);
-    if (threeState.currentAction && threeState.playRange) {
-      const { startSec, endSec, loop } = threeState.playRange;
-      if (endSec > startSec + 0.001 && threeState.currentAction.time >= endSec) {
-        if (loop) {
-          threeState.currentAction.time = startSec;
-        } else {
-          threeState.currentAction.paused = true;
-          if (carriedMode && !carriedReachedHoldPose) {
-            carriedReachedHoldPose = true;
-            standBtn.style.display = "inline-flex";
-          }
-        }
-      }
-    }
-    if (threeState.controls) threeState.controls.update();
-    threeState.renderer.render(threeState.scene, threeState.camera);
-    threeState.rafId = requestAnimationFrame(renderThreeLoop);
-  }
-
-  function startThreeLoop() {
-    if (!threeState.ready || threeState.rafId) return;
-    threeState.clock.start();
-    threeState.rafId = requestAnimationFrame(renderThreeLoop);
-  }
-
-  async function ensureThreeReady() {
-    if (threeState.ready) return true;
-    if (threeState.failed) return false;
-    if (threeState.initPromise) return threeState.initPromise;
-
-    threeState.initPromise = (async () => {
-      try {
-        const THREE = await import("https://esm.sh/three@0.160.0");
-        const { FBXLoader } = await import("https://esm.sh/three@0.160.0/examples/jsm/loaders/FBXLoader.js");
-        const SkeletonUtils = await import("https://esm.sh/three@0.160.0/examples/jsm/utils/SkeletonUtils.js");
-        const { OrbitControls } = await import("https://esm.sh/three@0.160.0/examples/jsm/controls/OrbitControls.js");
-
-        threeState.THREE = THREE;
-        threeState.FBXLoader = FBXLoader;
-        threeState.SkeletonUtils = SkeletonUtils;
-
-        const renderer = new THREE.WebGLRenderer({
-          canvas: threeLayer,
-          alpha: true,
-          antialias: true,
-          logarithmicDepthBuffer: true,
-        });
-        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-        renderer.setSize(CFG.avatarWidth, CFG.avatarHeight, false);
-        renderer.setClearColor(0x000000, 0);
-        renderer.sortObjects = true;
-        renderer.outputColorSpace = THREE.SRGBColorSpace;
-        renderer.toneMapping = THREE.ACESFilmicToneMapping;
-        renderer.toneMappingExposure = 1.08;
-
-        const scene = new THREE.Scene();
-        const camera = new THREE.PerspectiveCamera(30, CFG.avatarWidth / CFG.avatarHeight, 0.1, 2000);
-        camera.position.set(0, 85, 260);
-        camera.lookAt(0, 80, 0);
-        const controls = new OrbitControls(camera, threeLayer);
-        controls.enablePan = false;
-        controls.enableZoom = true;
-        controls.enableDamping = true;
-        controls.dampingFactor = 0.08;
-        controls.rotateSpeed = 0.65;
-        controls.zoomSpeed = 0.85;
-        controls.target.set(0, 0, 0);
-        controls.minPolarAngle = 0.2;
-        controls.maxPolarAngle = Math.PI - 0.2;
-        controls.addEventListener("start", () => {
-          threeState.orbiting = true;
-          threeLayer.style.cursor = "grabbing";
-        });
-        controls.addEventListener("end", () => {
-          threeState.orbiting = false;
-          threeLayer.style.cursor = "grab";
-        });
-        controls.enabled = !ctrlDown;
-
-        const hemi = new THREE.HemisphereLight(0xfff2df, 0x7a5f4a, 0.95);
-        scene.add(hemi);
-        const ambient = new THREE.AmbientLight(0xfff6eb, 0.18);
-        scene.add(ambient);
-        const key = new THREE.DirectionalLight(0xfff1e0, 1.45);
-        key.position.set(3, 7, 6);
-        scene.add(key);
-        const fill = new THREE.DirectionalLight(0xfff8f0, 0.5);
-        fill.position.set(-4, 2, -3);
-        scene.add(fill);
-        const rim = new THREE.DirectionalLight(0xffe7d0, 0.32);
-        rim.position.set(0, 5, -6);
-        scene.add(rim);
-
-        threeState.renderer = renderer;
-        threeState.scene = scene;
-        threeState.camera = camera;
-        threeState.loader = new FBXLoader();
-        threeState.textureLoader = new THREE.TextureLoader();
-        threeState.clock = new THREE.Clock();
-        threeState.controls = controls;
-        threeState.ready = true;
-        startThreeLoop();
-        return true;
-      } catch (err) {
-        console.warn("FBX runtime unavailable, falling back to video mode", err);
-        threeState.failed = true;
-        return false;
-      }
-    })();
-
-    return threeState.initPromise;
-  }
-
-  async function loadFbxClip(src) {
-    const key = resolveAsset(src);
-    let cached = threeState.clipCache.get(key);
-    if (!cached) {
-      cached = await threeState.loader.loadAsync(key);
-      threeState.clipCache.set(key, cached);
-    }
-    const clone = (threeState.SkeletonUtils.clone || ((obj) => obj.clone(true)))(cached);
-    const clips = (cached.animations && cached.animations.length ? cached.animations : clone.animations) || [];
-    const clip = clips[0] || null;
-    const durationMs = clip ? Math.max(1000, Math.round(clip.duration * 1000)) : 5000;
-    const texCfg = CFG.characterTextures || {};
-    const [baseColorTex, normalTex, roughnessTex, metalnessTex] = await Promise.all([
-      loadTextureCached(texCfg.baseColor),
-      loadTextureCached(texCfg.normal),
-      loadTextureCached(texCfg.roughness),
-      loadTextureCached(texCfg.metalness),
-    ]);
-    if (baseColorTex && threeState.THREE?.SRGBColorSpace) {
-      baseColorTex.colorSpace = threeState.THREE.SRGBColorSpace;
-    }
-    if (normalTex && threeState.THREE?.NoColorSpace) normalTex.colorSpace = threeState.THREE.NoColorSpace;
-    if (roughnessTex && threeState.THREE?.NoColorSpace) roughnessTex.colorSpace = threeState.THREE.NoColorSpace;
-    if (metalnessTex && threeState.THREE?.NoColorSpace) metalnessTex.colorSpace = threeState.THREE.NoColorSpace;
-    let hasRenderableMesh = false;
-    clone.traverse((obj) => {
-      if (!obj || (!obj.isMesh && !obj.isSkinnedMesh)) return;
-      hasRenderableMesh = true;
-      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-      for (const mat of mats) {
-        if (!mat) continue;
-        if (baseColorTex) mat.map = baseColorTex;
-        if (normalTex) mat.normalMap = normalTex;
-        if (roughnessTex) mat.roughnessMap = roughnessTex;
-        if (metalnessTex) mat.metalnessMap = metalnessTex;
-        if (normalTex) mat.normalScale?.set?.(1, 1);
-        if (roughnessTex) mat.roughness = 1;
-        if (metalnessTex) mat.metalness = 1;
-        if (mat.map) mat.map.needsUpdate = true;
-        if (mat.normalMap) mat.normalMap.needsUpdate = true;
-        if (mat.roughnessMap) mat.roughnessMap.needsUpdate = true;
-        if (mat.metalnessMap) mat.metalnessMap.needsUpdate = true;
-        if (mat.map && threeState.THREE?.SRGBColorSpace) mat.map.colorSpace = threeState.THREE.SRGBColorSpace;
-        if (mat.emissiveMap && threeState.THREE?.SRGBColorSpace) {
-          mat.emissiveMap.colorSpace = threeState.THREE.SRGBColorSpace;
-        }
-        if (mat.color && mat.color.setRGB) mat.color.setRGB(1, 1, 1);
-        mat.needsUpdate = true;
-      }
+  function initThree() {
+    // Renderer
+    threeRenderer = new THREE.WebGLRenderer({
+      canvas: vrmCanvas,
+      alpha: true,
+      antialias: true,
     });
-    if (!hasRenderableMesh) {
-      throw new Error(`FBX has animation data but no renderable mesh: ${src}`);
-    }
-    return { root: clone, clip, durationMs };
+    threeRenderer.setSize(CFG.avatarWidth, CFG.avatarHeight);
+    threeRenderer.setPixelRatio(1);
+    threeRenderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    // Scene
+    threeScene = new THREE.Scene();
+
+    // Lighting
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+    threeScene.add(ambientLight);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
+    dirLight.position.set(1, 2, 2);
+    threeScene.add(dirLight);
+    const fillLight = new THREE.DirectionalLight(0xffffff, 0.4);
+    fillLight.position.set(-1, 0, 1);
+    threeScene.add(fillLight);
+
+    // Camera — Full body framing
+    threeCamera = new THREE.PerspectiveCamera(
+      48,
+      CFG.avatarWidth / CFG.avatarHeight,
+      0.1,
+      30
+    );
+    threeCamera.position.set(0, 0.95, 3.25);
+    threeCamera.lookAt(0, 0.90, 0);
+
+    // Load VRM
+    loadVRM();
+
+    // Start render loop
+    renderLoop(performance.now());
+
+    // Add wheel listener for zoom
+    vrmCanvas.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      if (!threeCamera) return;
+      const delta = e.deltaY * 0.05;
+      // Keep zoom usable without pushing framing into aggressive crop.
+      threeCamera.fov = Math.max(18, Math.min(72, threeCamera.fov + delta));
+      threeCamera.updateProjectionMatrix();
+    }, { passive: false });
   }
 
-  function stopFbx() {
-    if (!threeState.ready) return;
-    if (threeState.currentAction) {
-      threeState.currentAction.stop();
-      threeState.currentAction = null;
-    }
-    if (threeState.currentRoot) {
-      threeState.scene.remove(threeState.currentRoot);
-      threeState.currentRoot = null;
-    }
-    threeState.mixer = null;
-    threeState.playRange = null;
-    threeState.currentDurationMs = 5000;
-    threeLayer.style.display = "none";
-  }
+  function loadVRM() {
+    const loader = new GLTFLoader();
+    loader.register((parser) => new VRMLoaderPlugin(parser));
 
-  async function playFbx(src, loop = true, opts = {}) {
-    const ready = await ensureThreeReady();
-    if (!ready) return false;
-    try {
-      const { root, clip, durationMs } = await loadFbxClip(src);
-      stopFbx();
-      threeState.scene.add(root);
-      fitCameraToModel(root);
-      threeState.currentRoot = root;
-      threeState.currentDurationMs = durationMs;
-      threeState.mixer = new threeState.THREE.AnimationMixer(root);
-      if (clip) {
-        const clipDuration = Math.max(0.001, clip.duration || 0.001);
-        let startSec = Math.max(0, Number(opts.rangeStartSec) || 0);
-        let endSec = Math.min(clipDuration, Number(opts.rangeEndSec) || clipDuration);
-        if (opts.halfOnly) {
-          const frames = Math.max(1, Number(CFG.carriedLoopFrames) || 5);
-          const fps = Math.max(1, Number(CFG.carriedLoopFps) || 30);
-          const frameWindowSec = frames / fps;
-          startSec = 0;
-          endSec = Math.min(clipDuration, frameWindowSec);
-        }
-        if (endSec <= startSec + 0.001) {
-          startSec = 0;
-          endSec = clipDuration;
-        }
-        threeState.playRange = { startSec, endSec, loop };
-        const action = threeState.mixer.clipAction(clip);
-        action.reset();
-        action.clampWhenFinished = !loop;
-        action.setLoop(loop ? threeState.THREE.LoopRepeat : threeState.THREE.LoopOnce, loop ? Infinity : 1);
-        action.time = startSec;
-        action.play();
-        threeState.currentAction = action;
-      } else {
-        threeState.playRange = null;
-      }
-      animVideo.style.display = "none";
-      idleStill.style.display = "none";
-      threeLayer.style.display = "block";
-      startThreeLoop();
-      return true;
-    } catch (err) {
-      console.warn("FBX play failed", err);
-      return false;
-    }
-  }
-
-  async function crossfadeToFbx(src, loop = true, playOpts = {}) {
-    const ms = Math.max(60, Number(playOpts.fadeMs) || Number(CFG.dragCrossfadeMs) || 240);
-    threeLayer.style.transition = `opacity ${ms}ms ease`;
-    threeLayer.style.opacity = "0";
-    await sleepMs(Math.round(ms * 0.55));
-    const ok = await playFbx(src, loop, playOpts);
-    if (!ok) {
-      threeLayer.style.opacity = "1";
-      return false;
-    }
-    threeLayer.style.opacity = "0";
-    requestAnimationFrame(() => {
-      threeLayer.style.opacity = "1";
-    });
-    await sleepMs(ms);
-    return true;
-  }
-
-  async function runStartupSequence() {
-    startupSequenceActive = true;
-    try {
-      const greeting = CFG.greetingAnimation;
-      if (greeting && isFbxAsset(greeting)) {
-        const played = await playFbx(greeting, false);
-        if (played) {
-          const duration = Math.max(300, threeState.currentDurationMs || 1200);
-          await sleepMs(duration);
-          const faded = await crossfadeToFbx(CFG.idleMainVideo, true);
-          if (!faded) {
-            await holdIdleStill(CFG.idleMainVideo);
-          }
+    loader.load(
+      resolveAsset(CFG.vrmPath),
+      (gltf) => {
+        const vrm = gltf.userData.vrm;
+        if (!vrm) {
+          console.error("EyeAI: VRM data not found in loaded GLTF.");
           return;
         }
-      }
-      await holdIdleStill(CFG.idleMainVideo);
-    } finally {
-      startupSequenceActive = false;
-    }
-  }
 
-  async function playVideo(src, loop = true) {
-    if (isFbxAsset(src)) return playFbx(src, loop);
-    if (document.visibilityState === "hidden") return;
-    stopFbx();
-    idleStill.style.display = "none";
-    animVideo.src = resolveAsset(src);
-    animVideo.loop = loop;
-    if (animTimeHandler) {
-      animVideo.removeEventListener("timeupdate", animTimeHandler);
-      animTimeHandler = null;
-    }
-    try {
-      await animVideo.play();
-    } catch (err) {
-      if (err && err.name !== "AbortError") {
-        console.warn("Video play failed", err);
-      }
-      return;
-    }
-    animVideo.style.display = "block";
-  }
+        vrmModel = vrm;
 
-  function stopVideo() {
-    if (animTimeHandler) {
-      animVideo.removeEventListener("timeupdate", animTimeHandler);
-      animTimeHandler = null;
-    }
-    animVideo.pause();
-    animVideo.style.display = "none";
-  }
-
-  async function holdIdleStill(src) {
-    if (isFbxAsset(src)) {
-      await playFbx(src, true);
-      return;
-    }
-    try {
-      stopFbx();
-      idleStillHold = true;
-      idleStill.src = resolveAsset(src);
-      await waitForMetadata(idleStill);
-      const last = Math.max(0, (idleStill.duration || 0) - 0.05);
-      idleStill.currentTime = last;
-      idleStill.pause();
-      idleStill.style.display = "block";
-      animVideo.style.display = "none";
-    } catch {
-      // no-op
-    }
-  }
-
-  function waitForMetadata(video) {
-    if (video.readyState >= 1 && !isNaN(video.duration)) return Promise.resolve();
-    return new Promise((resolve) => {
-      const onMeta = () => {
-        video.removeEventListener("loadedmetadata", onMeta);
-        resolve();
-      };
-      video.addEventListener("loadedmetadata", onMeta);
-    });
-  }
-
-  async function playSegment(video, startSec, endSec, loop) {
-    if (document.visibilityState === "hidden") return false;
-    await waitForMetadata(video);
-    const dur = video.duration || 0;
-    const start = Math.max(0, Math.min(startSec, dur));
-    const end = Math.max(start, Math.min(endSec, dur));
-    if (end <= start) return false;
-
-    let resolveDone;
-    const done = new Promise((resolve) => {
-      resolveDone = resolve;
-    });
-
-    const onTime = () => {
-      if (video.currentTime >= end) {
-        if (loop) {
-          video.currentTime = start;
-        } else {
-          video.pause();
-          video.removeEventListener("timeupdate", onTime);
-          if (animTimeHandler === onTime) animTimeHandler = null;
-          resolveDone(true);
+        if (vrm.scene) {
+          // This model's forward direction is already correct at 0 for initial facing.
+          vrm.scene.rotation.y = 0;
+          threeScene.add(vrm.scene);
         }
+
+        // Set up animation mixer
+        vrmMixer = new THREE.AnimationMixer(vrm.scene);
+
+        // Initialise procedural animation (caches bone refs, resets state)
+        initProceduralAnim(vrm.humanoid);
+
+        console.log("EyeAI: VRM model loaded successfully.");
+      },
+      undefined,
+      (error) => {
+        console.error("EyeAI: Failed to load VRM model:", error);
       }
+    );
+  }
+
+  function renderLoop(timestamp) {
+    animFrameId = requestAnimationFrame(renderLoop);
+
+    if (!threeRenderer || !threeScene || !threeCamera) return;
+
+    const delta = lastTimestamp !== null ? (timestamp - lastTimestamp) / 1000 : 0.016;
+    lastTimestamp = timestamp;
+    const dt = Math.min(delta, 0.1);
+
+    if (vrmModel) {
+      animateVRM(dt);
+      vrmModel.update(dt);
+    }
+
+    if (vrmMixer) {
+      vrmMixer.update(dt);
+    }
+
+    threeRenderer.render(threeScene, threeCamera);
+  }
+
+  // =====================================================================
+  // PROCEDURAL ANIMATION
+  // =====================================================================
+  const procAnim = {
+    time: 0,
+    idleActive: false,  idleBlend: 0,
+    talkActive: false,  talkBlend: 0,
+    carryActive: false, carryBlend: 0,
+    spineY: 0, spineZ: 0, neckX: 0, neckY: 0, headX: 0, headY: 0,
+    leftArmZ: 0, leftArmX: 0, rightArmZ: 0, rightArmX: 0,
+    leftForeArmZ: 0, rightForeArmZ: 0,
+    sSpineY: 0, sSpineZ: 0, sNeckX: 0, sNeckY: 0, sHeadX: 0, sHeadY: 0,
+    sLeftArmZ: 0, sLeftArmX: 0, sRightArmZ: 0, sRightArmX: 0,
+    sLeftForeArmZ: 0, sRightForeArmZ: 0,
+    nextGestureAt: 0, gesturePhase: 0, gestureArm: 'right', gestureTimer: 0, didGestureThisTalk: false,
+    bones: null,
+  };
+
+  function lp(current, target, speed) {
+    return current + (target - current) * Math.min(1, speed);
+  }
+
+  function initProceduralAnim(humanoid) {
+    if (!humanoid) return;
+    procAnim.bones = {
+      spine:         humanoid.getNormalizedBoneNode("spine"),
+      chest:         humanoid.getNormalizedBoneNode("chest"),
+      neck:          humanoid.getNormalizedBoneNode("neck"),
+      head:          humanoid.getNormalizedBoneNode("head"),
+      leftUpperArm:  humanoid.getNormalizedBoneNode("leftUpperArm"),
+      rightUpperArm: humanoid.getNormalizedBoneNode("rightUpperArm"),
+      leftLowerArm:  humanoid.getNormalizedBoneNode("leftLowerArm"),
+      rightLowerArm: humanoid.getNormalizedBoneNode("rightLowerArm"),
     };
-
-    if (animTimeHandler) {
-      video.removeEventListener("timeupdate", animTimeHandler);
-      animTimeHandler = null;
-    }
-    video.currentTime = start;
-    video.addEventListener("timeupdate", onTime);
-    animTimeHandler = onTime;
-    try {
-      await video.play();
-    } catch (err) {
-      if (err && err.name !== "AbortError") {
-        console.warn("Video segment play failed", err);
-      }
-      return false;
-    }
-    if (loop) return true;
-    return await done;
+    Object.assign(procAnim, {
+      time: 0, idleBlend: 0, talkBlend: 0, carryBlend: 0,
+      sSpineY: 0, sSpineZ: 0, sNeckX: 0, sNeckY: 0, sHeadX: 0, sHeadY: 0,
+      sLeftArmZ: 0, sLeftArmX: 0, sRightArmZ: 0, sRightArmX: 0,
+      sLeftForeArmZ: 0, sRightForeArmZ: 0,
+      gesturePhase: 0, nextGestureAt: 0, didGestureThisTalk: false,
+    });
+    procAnim.idleActive = true;
   }
 
-  async function playLoopFor(src, ms) {
-    if (!src) return false;
-    if (isFbxAsset(src)) {
-      const ok = await playFbx(src, true);
-      if (!ok) return false;
-      await new Promise((resolve) => setTimeout(resolve, ms));
-      return true;
-    }
-    stopFbx();
-    stopVideo();
-    animVideo.src = resolveAsset(src);
-    animVideo.loop = true;
-    animVideo.style.display = "block";
-    await waitForMetadata(animVideo);
-    try {
-      await animVideo.play();
-    } catch (err) {
-      if (err && err.name !== "AbortError") {
-        console.warn("Video play failed", err);
+  function updateProceduralAnim(dt) {
+    const B = procAnim.bones;
+    if (!B) return;
+    const t = procAnim.time += dt;
+
+    procAnim.idleBlend  = lp(procAnim.idleBlend,  procAnim.idleActive  ? 1 : 0, dt * 2.5);
+    procAnim.talkBlend  = lp(procAnim.talkBlend,  procAnim.talkActive  ? 1 : 0, dt * 3.0);
+    procAnim.carryBlend = lp(procAnim.carryBlend, procAnim.carryActive ? 1 : 0, dt * 4.0);
+    const idle = procAnim.idleBlend, talk = procAnim.talkBlend, carry = procAnim.carryBlend;
+
+    // ---- Idle: breathing sway + gentle head drift ----
+    const breathe   = Math.sin(t * 1.15) * 0.018;
+    const sway      = Math.sin(t * 0.42) * 0.012;
+    const headNod   = Math.sin(t * 0.78) * 0.025;
+    const headDrift = Math.sin(t * 0.31) * 0.018;
+    const armFloat  = Math.sin(t * 0.9)  * 0.04;
+
+    procAnim.spineZ = breathe * idle;
+    procAnim.spineY = sway * idle;
+    procAnim.neckX  = headNod * 0.5 * idle;
+    procAnim.neckY  = headDrift * 0.5 * idle;
+    procAnim.headX  = headNod * idle;
+    procAnim.headY  = headDrift * idle;
+    // Keep a natural resting stance instead of a T-pose.
+    procAnim.leftArmZ  = (-1.34 + armFloat * 0.10) * idle;
+    procAnim.rightArmZ = ( 1.34 - armFloat * 0.10) * idle;
+    procAnim.leftArmX  = 0.02 * idle;
+    procAnim.rightArmX = 0.02 * idle;
+    procAnim.leftForeArmZ  =  0.04 * idle;
+    procAnim.rightForeArmZ = -0.04 * idle;
+
+    // ---- Talk: energetic head + gesture arm ----
+    if (talk > 0.01) {
+      const tt = t * 2.8;
+      procAnim.spineZ += Math.sin(tt * 0.5) * 0.03 * talk;
+      procAnim.spineY += Math.sin(tt * 0.7 + 0.5) * 0.018 * talk;
+      procAnim.headX  += Math.sin(tt) * 0.07 * talk;
+      procAnim.headY  += Math.sin(tt * 0.7 + 0.5) * 0.045 * talk;
+      procAnim.neckX  += Math.sin(tt) * 0.042 * talk;
+      procAnim.neckY  += Math.sin(tt * 0.7 + 0.5) * 0.0225 * talk;
+
+      if (!procAnim.didGestureThisTalk && procAnim.gesturePhase === 0) {
+        procAnim.gesturePhase = 1;
+        procAnim.gestureArm = Math.random() > 0.5 ? 'right' : 'left';
+        procAnim.gestureTimer = t;
       }
-      return false;
+      const ge = t - procAnim.gestureTimer;
+      const gR = procAnim.gestureArm === 'right';
+      if (procAnim.gesturePhase === 1) {
+        const prog = Math.min(1, ge / 0.4), ang = prog * 0.9;
+        if (gR) { procAnim.rightArmZ = -(0.12 + ang * 0.7) * talk; procAnim.rightArmX = ang * 0.3 * talk; procAnim.rightForeArmZ = -ang * 0.5 * talk; }
+        else    { procAnim.leftArmZ  =  (0.12 + ang * 0.7) * talk; procAnim.leftArmX  = ang * 0.3 * talk; procAnim.leftForeArmZ  =  ang * 0.5 * talk; }
+        if (prog >= 1) { procAnim.gesturePhase = 2; procAnim.gestureTimer = t; }
+      } else if (procAnim.gesturePhase === 2) {
+        if (gR) { procAnim.rightArmZ = -0.82 * talk; procAnim.rightArmX = 0.3 * talk; procAnim.rightForeArmZ = -0.5 * talk; }
+        else    { procAnim.leftArmZ  =  0.82 * talk; procAnim.leftArmX  = 0.3 * talk; procAnim.leftForeArmZ  =  0.5 * talk; }
+        if (ge > 1.2) { procAnim.gesturePhase = 3; procAnim.gestureTimer = t; }
+      } else if (procAnim.gesturePhase === 3) {
+        const prog = Math.min(1, ge / 0.5), ang = (1 - prog) * 0.9;
+        if (gR) { procAnim.rightArmZ = -(0.12 + ang * 0.7) * talk; procAnim.rightArmX = ang * 0.3 * talk; procAnim.rightForeArmZ = -ang * 0.5 * talk; }
+        else    { procAnim.leftArmZ  =  (0.12 + ang * 0.7) * talk; procAnim.leftArmX  = ang * 0.3 * talk; procAnim.leftForeArmZ  =  ang * 0.5 * talk; }
+        if (prog >= 1) { procAnim.gesturePhase = 0; procAnim.didGestureThisTalk = true; }
+      }
+    } else {
+      if (procAnim.gesturePhase !== 0) { procAnim.gesturePhase = 0; procAnim.nextGestureAt = 0; }
+      procAnim.didGestureThisTalk = false;
     }
-    await new Promise((resolve) => setTimeout(resolve, ms));
-    animVideo.loop = false;
-    return true;
+
+    // ---- Carry: limp dangle ----
+    if (carry > 0.01) {
+      const dangle = Math.sin(t * 3.2) * 0.06 * carry;
+      const swing  = Math.sin(t * 2.1 + 1.0) * 0.08 * carry;
+      const aSwing = Math.sin(t * 2.8) * 0.12 * carry;
+      procAnim.spineZ += 0.28 * carry + dangle;
+      procAnim.spineY += swing * 0.3;
+      procAnim.headX  += 0.22 * carry + dangle * 0.5;
+      procAnim.headY  += swing * 0.4;
+      procAnim.neckX  += 0.18 * carry;
+      const carryLeftArmZ = 0.05 + aSwing;
+      const carryRightArmZ = -(0.05 - aSwing);
+      const carryArmX = 0.35;
+      const carryLeftForeArmZ = 0.6 + aSwing * 0.5;
+      const carryRightForeArmZ = -0.6 - aSwing * 0.5;
+
+      // Blend from current pose to carry targets to avoid a brief neutral/T-pose snap on pickup.
+      procAnim.leftArmZ  = lp(procAnim.leftArmZ, carryLeftArmZ, carry);
+      procAnim.rightArmZ = lp(procAnim.rightArmZ, carryRightArmZ, carry);
+      procAnim.leftArmX  = lp(procAnim.leftArmX, carryArmX, carry);
+      procAnim.rightArmX = lp(procAnim.rightArmX, carryArmX, carry);
+      procAnim.leftForeArmZ  = lp(procAnim.leftForeArmZ, carryLeftForeArmZ, carry);
+      procAnim.rightForeArmZ = lp(procAnim.rightForeArmZ, carryRightForeArmZ, carry);
+    }
+
+    // ---- Smooth ----
+    const s = Math.min(1, dt * 8);
+    procAnim.sSpineY        = lp(procAnim.sSpineY,        procAnim.spineY,        s);
+    procAnim.sSpineZ        = lp(procAnim.sSpineZ,        procAnim.spineZ,        s);
+    procAnim.sNeckX         = lp(procAnim.sNeckX,         procAnim.neckX,         s);
+    procAnim.sNeckY         = lp(procAnim.sNeckY,         procAnim.neckY,         s);
+    procAnim.sHeadX         = lp(procAnim.sHeadX,         procAnim.headX,         s);
+    procAnim.sHeadY         = lp(procAnim.sHeadY,         procAnim.headY,         s);
+    procAnim.sLeftArmZ      = lp(procAnim.sLeftArmZ,      procAnim.leftArmZ,      s * 0.7);
+    procAnim.sLeftArmX      = lp(procAnim.sLeftArmX,      procAnim.leftArmX,      s * 0.7);
+    procAnim.sRightArmZ     = lp(procAnim.sRightArmZ,     procAnim.rightArmZ,     s * 0.7);
+    procAnim.sRightArmX     = lp(procAnim.sRightArmX,     procAnim.rightArmX,     s * 0.7);
+    procAnim.sLeftForeArmZ  = lp(procAnim.sLeftForeArmZ,  procAnim.leftForeArmZ,  s * 0.6);
+    procAnim.sRightForeArmZ = lp(procAnim.sRightForeArmZ, procAnim.rightForeArmZ, s * 0.6);
+
+    // ---- Apply to VRM bones ----
+    if (B.spine)        { B.spine.rotation.y = procAnim.sSpineY; B.spine.rotation.x = procAnim.sSpineZ; }
+    if (B.chest)        { B.chest.rotation.y = procAnim.sSpineY * 0.5; B.chest.rotation.x = procAnim.sSpineZ * 0.5 + idle * 0.009; B.chest.scale.y = 1 + idle * 0.022 * (Math.sin(t * 1.15) * 0.5 + 0.5); }
+    if (B.neck)         { B.neck.rotation.x = procAnim.sNeckX; B.neck.rotation.z = procAnim.sNeckY; }
+    if (B.head)         { B.head.rotation.x = procAnim.sHeadX; B.head.rotation.z = procAnim.sHeadY; }
+    if (B.leftUpperArm) { B.leftUpperArm.rotation.z = procAnim.sLeftArmZ; B.leftUpperArm.rotation.x = procAnim.sLeftArmX; }
+    if (B.rightUpperArm){ B.rightUpperArm.rotation.z = procAnim.sRightArmZ; B.rightUpperArm.rotation.x = procAnim.sRightArmX; }
+    if (B.leftLowerArm)  B.leftLowerArm.rotation.z  = procAnim.sLeftForeArmZ;
+    if (B.rightLowerArm) B.rightLowerArm.rotation.z = procAnim.sRightForeArmZ;
+  }
+
+  function animateVRM(dt) {
+    if (!vrmModel) return;
+    const expressions = vrmModel.expressionManager;
+
+    procAnim.talkActive  = isTalking;
+    procAnim.carryActive = isPickedUp;
+    procAnim.idleActive  = true;
+    updateProceduralAnim(dt);
+
+    // ---- Blink (state machine) ----
+    if (expressions) {
+      blinkTimer -= dt;
+      if (blinkState === "open" && blinkTimer <= 0) {
+        blinkState = "closing"; blinkProgress = 0; blinkTimer = 0.12;
+      }
+      if (blinkState === "closing") {
+        blinkProgress += dt / 0.06;
+        const v = Math.min(1, blinkProgress);
+        safeSetExpression(expressions, "blink", v);
+        if (v >= 1) { blinkState = "opening"; blinkProgress = 0; }
+      } else if (blinkState === "opening") {
+        blinkProgress += dt / 0.08;
+        const v = Math.min(1, blinkProgress);
+        safeSetExpression(expressions, "blink", 1 - v);
+        if (v >= 1) { blinkState = "open"; blinkProgress = 0; blinkTimer = 2.5 + Math.random() * 3.5; }
+      }
+
+      // ---- Mouth ----
+      if (isTalking) {
+        mouthPhase += dt * 6;
+        const mouthVal = (Math.sin(mouthPhase * Math.PI * 2) * 0.5 + 0.5) * 0.75;
+        safeSetExpression(expressions, "aa", mouthVal);
+        safeSetExpression(expressions, "oh", mouthVal * 0.3);
+        safeSetExpression(expressions, "relaxed", 0);
+      } else {
+        const curAa = safeGetExpression(expressions, "aa");
+        if (curAa > 0.01) safeSetExpression(expressions, "aa", Math.max(0, curAa - dt * 4));
+        else safeSetExpression(expressions, "aa", 0);
+        const curOh = safeGetExpression(expressions, "oh");
+        if (curOh > 0.01) safeSetExpression(expressions, "oh", Math.max(0, curOh - dt * 4));
+        else safeSetExpression(expressions, "oh", 0);
+        safeSetExpression(expressions, "relaxed", 0.25);
+      }
+    }
+  }
+
+  function safeSetExpression(mgr, name, value) {
+    try {
+      if (mgr.setValue) mgr.setValue(name, value);
+    } catch (_) { }
+  }
+
+  function safeGetExpression(mgr, name) {
+    try {
+      if (mgr.getValue) return mgr.getValue(name) || 0;
+    } catch (_) { }
+    return 0;
   }
 
   // -----------------------------
-  // Scheduler
+  // Scheduler / state
   // -----------------------------
-  const idlePool = [CFG.idleMainVideo, ...CFG.idleRareVideos];
-  let nextIdle = nowMs() + 3000;
-  let until = 0;
-
   let talkTimer = null;
   let talkToken = 0;
   let animationHold = false;
   let highlightTimer = null;
   let activeHighlights = [];
   let bubbleCustomPos = null;
-  let idlePlaying = false;
-  let carriedMode = false;
-  let carriedToken = 0;
-  let carriedReachedHoldPose = false;
-
-  async function enterCarriedMode() {
-    if (carriedMode) return;
-    carriedMode = true;
-    carriedReachedHoldPose = false;
-    standBtn.style.display = "none";
-    animationHold = true;
-    until = 0;
-    const myToken = ++carriedToken;
-    const clip = CFG.carriedAnimation || CFG.idleMainVideo;
-    const ok = await crossfadeToFbx(clip, false);
-    if (!ok && carriedToken === myToken) {
-      carriedMode = false;
-      releaseToIdle();
-      standBtn.style.display = "none";
-      return;
-    }
-  }
-
-  async function cancelCarriedModeEarly() {
-    if (!carriedMode) return;
-    carriedMode = false;
-    carriedReachedHoldPose = false;
-    standBtn.style.display = "none";
-    const myToken = ++carriedToken;
-    await crossfadeToFbx(CFG.idleMainVideo, true, { fadeMs: Math.max(90, Number(CFG.dragCrossfadeMs) || 90) });
-    if (carriedToken !== myToken) return;
-    animationHold = false;
-    until = 0;
-    nextIdle = nowMs() + 3000;
-  }
-
-  async function exitCarriedMode() {
-    if (!carriedMode) return;
-    carriedMode = false;
-    carriedReachedHoldPose = false;
-    standBtn.style.display = "none";
-    const myToken = ++carriedToken;
-    const standUp = CFG.standUpAnimation;
-    if (standUp && isFbxAsset(standUp)) {
-      const bridgeOk = await crossfadeToFbx(standUp, false, {
-        fadeMs: Math.max(120, Number(CFG.dragCrossfadeMs) || 120),
-      });
-      if (carriedToken !== myToken) return;
-      if (bridgeOk) {
-        const dur = Math.max(250, threeState.currentDurationMs || 900);
-        const blendLead = Math.max(80, Number(CFG.standToIdleCrossfadeMs) || 180);
-        await sleepMs(Math.max(0, dur - blendLead));
-      }
-    }
-    if (carriedToken !== myToken) return;
-    const ok = await crossfadeToFbx(CFG.idleMainVideo, true, {
-      fadeMs: Math.max(120, Number(CFG.standToIdleCrossfadeMs) || 180),
-    });
-    if (carriedToken !== myToken) return;
-    if (!ok) {
-      releaseToIdle();
-      return;
-    }
-    animationHold = false;
-    until = 0;
-    nextIdle = nowMs() + 3000;
-  }
 
   function releaseToIdle() {
-    stopVideo();
-    carriedMode = false;
-    carriedReachedHoldPose = false;
-    carriedToken += 1;
-    standBtn.style.display = "none";
+    isTalking = false;
     animationHold = false;
-    until = 0;
-    nextIdle = nowMs() + 3000;
-    holdIdleStill(CFG.idleMainVideo);
   }
-
-  async function tick() {
-    if (startupSequenceActive) return;
-    if (animationHold) return;
-    const t = nowMs();
-    if (t < until) return;
-
-    if (t >= nextIdle) {
-      if (idlePlaying) return;
-      idlePlaying = true;
-      const clip = idlePool[Math.floor(Math.random() * idlePool.length)];
-      if (isFbxAsset(clip)) {
-        try {
-          const played = await playFbx(clip, false);
-          if (!played) {
-            nextIdle = t + 5000;
-            return;
-          }
-          const durMs = Math.max(1000, threeState.currentDurationMs || 5000);
-          await new Promise((resolve) => setTimeout(resolve, durMs));
-          await holdIdleStill(CFG.idleMainVideo);
-          until = t + durMs;
-          nextIdle = t + randMs(CFG.idleMainEverySecondsMin, CFG.idleMainEverySecondsMax);
-          return;
-        } finally {
-          idlePlaying = false;
-        }
-      }
-      stopFbx();
-      stopVideo();
-      animVideo.src = resolveAsset(clip);
-      animVideo.loop = false;
-      await waitForMetadata(animVideo);
-      const durMs = Math.max(1000, Math.round((animVideo.duration || 5) * 1000));
-      animVideo.style.display = "block";
-      try {
-        const played = await playSegment(animVideo, 0, (animVideo.duration || 5), false);
-        if (!played) {
-          animVideo.style.display = "none";
-          nextIdle = t + 5000;
-          return;
-        }
-        await holdIdleStill(clip);
-        stopVideo();
-        until = t + durMs;
-        nextIdle = t + randMs(CFG.idleMainEverySecondsMin, CFG.idleMainEverySecondsMax);
-        return;
-      } finally {
-        idlePlaying = false;
-      }
-    }
-
-    stopVideo();
-  }
-
-  const tickInterval = setInterval(tick, 250);
 
   // -----------------------------
   // Ask handling
@@ -1304,40 +917,6 @@
     return bestScore > 0 ? best : null;
   }
 
-  function highlightRelevantText(answer, question, durationMs) {
-    clearHighlights();
-    const cleanedAnswer = sanitizeForMatch(answer);
-    const sentences = (cleanedAnswer || "")
-      .split(/[.!?]\s+/)
-      .map((s) => s.trim())
-      .filter((s) => s.length >= 20)
-      .sort((a, b) => b.length - a.length)
-      .slice(0, 3);
-
-    let match = null;
-    for (const sentence of sentences) {
-      match = findTextMatch(sentence);
-      if (match) break;
-    }
-
-    if (!match) {
-      const keywords = buildKeywords(`${question} ${cleanedAnswer}`);
-      match = findBestKeywordMatch(keywords);
-    }
-
-    if (!match) return false;
-    const mark = wrapTextRange(match.node, match.start, match.end);
-    if (!mark) return false;
-    activeHighlights.push(mark);
-    mark.scrollIntoView({ behavior: "smooth", block: "center" });
-
-    const clippedMs = Math.min(CFG.highlightMaxMs, Math.max(CFG.highlightMinMs, durationMs));
-    highlightTimer = setTimeout(() => {
-      clearHighlights();
-    }, clippedMs);
-    return true;
-  }
-
   bubbleClose.addEventListener("click", (e) => {
     e.stopPropagation();
     minimizeBubble();
@@ -1348,7 +927,7 @@
   closeBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     releaseToIdle();
-    clearInterval(tickInterval);
+    if (animFrameId) cancelAnimationFrame(animFrameId);
     root.style.display = "none";
     clearHighlights();
   });
@@ -1383,8 +962,6 @@
     clearHighlights();
     bubbleCustomPos = null;
 
-    // No thinking clip (removed per request)
-
     try {
       const pageText = getPageText();
 
@@ -1394,7 +971,18 @@
         body: JSON.stringify({ question, pageText }),
       });
 
-      if (!res.ok) throw new Error(`Request failed (${res.status})`);
+      if (!res.ok) {
+        let message = `Request failed (${res.status})`;
+        try {
+          const errData = await res.json();
+          const parts = [];
+          if (errData?.error) parts.push(errData.error);
+          if (typeof errData?.status === "number") parts.push(`upstream ${errData.status}`);
+          if (errData?.hint) parts.push(errData.hint);
+          if (parts.length) message = parts.join(" | ");
+        } catch (_) { }
+        throw new Error(message);
+      }
 
       const data = await res.json();
       console.log("AI response:", data);
@@ -1417,32 +1005,17 @@
           quoteHit = highlightQuotes([fallbackQuote], durationMs);
         }
       }
-      const resultClip = CFG.resultAnimation || pickClip(CFG.videos?.talkingMid);
-      const fadeMs = Math.max(60, Number(CFG.resultCrossfadeMs) || 110);
 
-      if (resultClip && isFbxAsset(resultClip)) {
-        const entered = await crossfadeToFbx(resultClip, false, { fadeMs });
-        if (!entered) {
-          releaseToIdle();
-          return;
-        }
+      // Start talking animation — release debugger freeze so poseT can run
+      isTalking = true;
+
+      talkTimer = setTimeout(() => {
         if (talkToken !== myToken) return;
-        const playMs = Math.max(240, threeState.currentDurationMs || 1000);
-        await sleepMs(playMs);
-        if (talkToken !== myToken) return;
-        await crossfadeToFbx(CFG.idleMainVideo, true, { fadeMs });
         releaseToIdle();
-      } else if (resultClip) {
-        const midMs = Math.max(2000, durationMs);
-        await playLoopFor(resultClip, midMs);
-        if (talkToken !== myToken) return;
-        await holdIdleStill(CFG.idleMainVideo);
-        releaseToIdle();
-      } else {
-        releaseToIdle();
-      }
+      }, durationMs);
+
     } catch (err) {
-      showBubble("Sorry, I couldn't reach the server.");
+      showBubble(err?.message || "Sorry, I couldn't reach the server.");
       console.error(err);
       releaseToIdle();
     } finally {
@@ -1457,32 +1030,7 @@
   });
 
   window.addEventListener("resize", () => {
-    syncAvatarToUi();
     if (bubble.style.display !== "none") positionBubble();
-  });
-
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") {
-      stopVideo();
-      animationHold = false;
-    }
-  });
-  window.addEventListener("keydown", (e) => {
-    if (e.key !== "Control") return;
-    ctrlDown = true;
-    if (threeState.controls) threeState.controls.enabled = false;
-  });
-  window.addEventListener("keyup", (e) => {
-    if (e.key !== "Control") return;
-    ctrlDown = false;
-    if (!avatarManuallyMoved) {
-      avatarFollowInput = true;
-      syncAvatarToUi();
-    }
-    if (!dragOn && carriedMode && !carriedReachedHoldPose) {
-      cancelCarriedModeEarly();
-    }
-    if (threeState.controls) threeState.controls.enabled = !dragOn;
   });
 
   // -----------------------------
@@ -1496,6 +1044,7 @@
 
   function onBubbleDragStart(e) {
     if (e.target === bubbleClose) return;
+    if (e.target.closest && e.target.closest("#eyeai-pose-debug")) return;
     bubbleDragOn = true;
     const pt = e.touches ? e.touches[0] : e;
     const rect = bubble.getBoundingClientRect();
@@ -1534,63 +1083,83 @@
   // Drag to move (avatar)
   // -----------------------------
   let dragOn = false;
+  let isSpinning = false;
   let dragStartX = 0;
   let dragStartY = 0;
   let startRight = CFG.avatarPos.right;
   let startBottom = CFG.avatarPos.bottom;
+  let startModelRot = 0;
+  let startModelTilt = 0;
+  let modelTilt = 0;
 
   function onDragStart(e) {
-    if (e.target === threeLayer && !ctrlDown) return;
-    if (threeState.orbiting && !ctrlDown) return;
-    if (avatarFollowInput && !ctrlDown) return;
     if (e.target === input || e.target === askBtn) return;
-    if (ctrlDown) {
-      avatarFollowInput = false;
-      if (threeState.controls) threeState.controls.enabled = false;
-      enterCarriedMode();
-    }
+    if (e.target.closest && e.target.closest("#eyeai-pose-debug")) return;
     dragOn = true;
+
+    const isControlPressed = e.ctrlKey;
+    if (e.target === vrmCanvas && isControlPressed) {
+      isPickedUp = true;
+    } else {
+      isPickedUp = false;
+    }
+
+    if (e.target === vrmCanvas && !isControlPressed) {
+      isSpinning = true;
+      startModelRot = vrmModel ? vrmModel.scene.rotation.y : 0;
+      startModelTilt = modelTilt;
+    } else {
+      isSpinning = false;
+    }
+
     const pt = e.touches ? e.touches[0] : e;
     dragStartX = pt.clientX;
     dragStartY = pt.clientY;
-    startRight = parseFloat(shell.style.right || CFG.avatarPos.right);
-    startBottom = parseFloat(shell.style.bottom || CFG.avatarPos.bottom);
+    startRight = parseFloat(shell.style.right || CFG.avatarPos.right.toString());
+    startBottom = parseFloat(shell.style.bottom || CFG.avatarPos.bottom.toString());
+    startModelRot = vrmModel ? vrmModel.scene.rotation.y : 0;
+    startModelTilt = modelTilt;
   }
 
   function onDragMove(e) {
     if (!dragOn) return;
+    if (e.target && e.target.closest && e.target.closest("#eyeai-pose-debug")) return;
     const pt = e.touches ? e.touches[0] : e;
     const dx = pt.clientX - dragStartX;
     const dy = pt.clientY - dragStartY;
-    const minRight = Number.isFinite(CFG.avatarMinRight) ? CFG.avatarMinRight : -2000;
-    const newRight = Math.max(minRight, startRight - dx);
-    const minBottom = Number.isFinite(CFG.avatarMinBottom) ? CFG.avatarMinBottom : -260;
-    const newBottom = Math.max(minBottom, startBottom - dy);
-    shell.style.right = `${newRight}px`;
-    shell.style.bottom = `${newBottom}px`;
-    avatarManuallyMoved = true;
-    if (bubble.style.display !== "none") positionBubble();
+
+    if (isSpinning) {
+      if (vrmModel) {
+        vrmModel.scene.rotation.y = startModelRot + dx * 0.01;
+        modelTilt = Math.max(-0.40, Math.min(0.25, startModelTilt + dy * 0.0045));
+        vrmModel.scene.rotation.x = modelTilt;
+      }
+    } else {
+      const newRight = Math.max(0, startRight - dx);
+      const newBottom = Math.max(0, startBottom - dy);
+      shell.style.right = `${newRight}px`;
+      shell.style.bottom = `${newBottom}px`;
+      if (bubble.style.display !== "none") positionBubble();
+    }
   }
 
   function onDragEnd() {
     dragOn = false;
-    if (carriedMode && !carriedReachedHoldPose) {
-      cancelCarriedModeEarly();
-    }
-    if (avatarFollowInput) syncAvatarToUi();
-    if (threeState.controls) threeState.controls.enabled = !ctrlDown;
+    isSpinning = false;
+    isPickedUp = false;
   }
 
   shell.addEventListener("mousedown", onDragStart);
-  threeLayer.addEventListener("mousedown", onDragStart);
   window.addEventListener("mousemove", onDragMove);
   window.addEventListener("mouseup", onDragEnd);
   shell.addEventListener("touchstart", onDragStart, { passive: true });
-  threeLayer.addEventListener("touchstart", onDragStart, { passive: true });
   window.addEventListener("touchmove", onDragMove, { passive: true });
   window.addEventListener("touchend", onDragEnd);
-  standBtn.addEventListener("click", async () => {
-    await exitCarriedMode();
+  window.addEventListener("keyup", (e) => {
+    if (e.key === "Control") isPickedUp = false;
+  });
+  window.addEventListener("blur", () => {
+    isPickedUp = false;
   });
 
   // -----------------------------
@@ -1604,6 +1173,7 @@
 
   function onUiDragStart(e) {
     if (e.target === input || e.target === askBtn) return;
+    if (e.target.closest && e.target.closest("#eyeai-pose-debug")) return;
     uiDragOn = true;
     const pt = e.touches ? e.touches[0] : e;
     uiDragStartX = pt.clientX;
@@ -1621,7 +1191,6 @@
     const newBottom = Math.max(0, uiStartBottom - dy);
     uiShell.style.right = `${newRight}px`;
     uiShell.style.bottom = `${newBottom}px`;
-    syncAvatarToUi();
   }
 
   function onUiDragEnd() {
@@ -1635,4 +1204,9 @@
   window.addEventListener("touchmove", onUiDragMove, { passive: true });
   window.addEventListener("touchend", onUiDragEnd);
 
-})();
+  // -----------------------------
+  // Init
+  // -----------------------------
+  initThree();
+
+}

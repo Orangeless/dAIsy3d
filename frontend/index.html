@@ -1,17 +1,48 @@
 <!doctype html>
 <html>
+
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Demo page</title>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.module.js",
+        "three/examples/jsm/": "https://cdn.jsdelivr.net/npm/three@0.158.0/examples/jsm/",
+        "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@2.1.0/lib/three-vrm.module.js"
+      }
+    }
+  </script>
 </head>
+
 <body>
   <h1>Demo page content</h1>
-  <p>Tyrannosaurus (/tɪˌrænəˈsɔːrəs, taɪ-/)[a] is a genus of large theropod dinosaur. The type species Tyrannosaurus rex (rex meaning 'king' in Latin), often shortened to T. rex or colloquially t-rex, is one of the best represented theropods. It lived throughout what is now western North America, on what was then an island continent known as Laramidia. Tyrannosaurus had a much wider range than other tyrannosaurids. Fossils are found in a variety of geological formations dating to the late Maastrichtian age of the late Cretaceous period, 69 to 66 million years ago, with isolated specimens possibly indicating an earlier origin in the middle Campanian age. It was one of the last known members of the tyrannosaurids and among the last non-avian dinosaurs to exist before the Cretaceous–Paleogene extinction event.
+  <p>Tyrannosaurus (/tɪˌrænəˈsɔːrəs, taɪ-/)[a] is a genus of large theropod dinosaur. The type species Tyrannosaurus rex
+    (rex meaning 'king' in Latin), often shortened to T. rex or colloquially t-rex, is one of the best represented
+    theropods. It lived throughout what is now western North America, on what was then an island continent known as
+    Laramidia. Tyrannosaurus had a much wider range than other tyrannosaurids. Fossils are found in a variety of
+    geological formations dating to the late Maastrichtian age of the late Cretaceous period, 69 to 66 million years
+    ago, with isolated specimens possibly indicating an earlier origin in the middle Campanian age. It was one of the
+    last known members of the tyrannosaurids and among the last non-avian dinosaurs to exist before the
+    Cretaceous–Paleogene extinction event.
 
-Like other tyrannosaurids, Tyrannosaurus was a bipedal carnivore with a massive skull balanced by a long, heavy tail. Relative to its large and powerful hind limbs, the forelimbs of Tyrannosaurus were short but unusually powerful for their size, and they had two clawed digits. The most complete specimen measures 12.3–12.4 m (40–41 ft) in length, but according to most modern estimates, Tyrannosaurus could have exceeded sizes of 13 m (43 ft) in length, 3.7–4 m (12–13 ft) in hip height, and 8.8 t (8.7 long tons; 9.7 short tons) in mass. Although some other theropods might have rivaled or exceeded Tyrannosaurus in size, it is still among the largest known land predators, with its estimated bite force being the largest among all terrestrial animals. By far the largest carnivore in its environment, Tyrannosaurus rex was most likely an apex predator, preying upon hadrosaurs, juvenile armored herbivores like ceratopsians and ankylosaurs, and possibly sauropods. Some experts have suggested the dinosaur was primarily a scavenger. The question of whether Tyrannosaurus was an apex predator or a pure scavenger was among the longest debates in paleontology. Most paleontologists today accept that Tyrannosaurus was both a predator and a scavenger.</p>
+    Like other tyrannosaurids, Tyrannosaurus was a bipedal carnivore with a massive skull balanced by a long, heavy
+    tail. Relative to its large and powerful hind limbs, the forelimbs of Tyrannosaurus were short but unusually
+    powerful for their size, and they had two clawed digits. The most complete specimen measures 12.3–12.4 m (40–41 ft)
+    in length, but according to most modern estimates, Tyrannosaurus could have exceeded sizes of 13 m (43 ft) in
+    length, 3.7–4 m (12–13 ft) in hip height, and 8.8 t (8.7 long tons; 9.7 short tons) in mass. Although some other
+    theropods might have rivaled or exceeded Tyrannosaurus in size, it is still among the largest known land predators,
+    with its estimated bite force being the largest among all terrestrial animals. By far the largest carnivore in its
+    environment, Tyrannosaurus rex was most likely an apex predator, preying upon hadrosaurs, juvenile armored
+    herbivores like ceratopsians and ankylosaurs, and possibly sauropods. Some experts have suggested the dinosaur was
+    primarily a scavenger. The question of whether Tyrannosaurus was an apex predator or a pure scavenger was among the
+    longest debates in paleontology. Most paleontologists today accept that Tyrannosaurus was both a predator and a
+    scavenger.</p>
 
-  <!-- Only for demo: load the injector -->
-  <script src="main.js"></script>
+  <!-- Load the injector as a module to support imports -->
+  <script type="module" src="main.js"></script>
 </body>
+
 </html>
