@@ -1,0 +1,100 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --klaira-pink: #ff6b9d;
+  --klaira-purple: #c77dff;
+  --klaira-blue: #7eb8f7;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Drag region for frameless window */
+.drag-region {
+  -webkit-app-region: drag;
+}
+
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* Glassmorphism panel */
+.glass-panel {
+  background: rgba(13, 13, 26, 0.88);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(199, 125, 255, 0.2);
+  border-radius: 16px;
+}
+
+/* Custom scrollbar */
+.chat-scroll::-webkit-scrollbar {
+  width: 3px;
+}
+
+.chat-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-scroll::-webkit-scrollbar-thumb {
+  background: rgba(199, 125, 255, 0.4);
+  border-radius: 99px;
+}
+
+/* Message bubbles */
+.msg-user {
+  background: linear-gradient(135deg, #7eb8f7, #c77dff);
+  color: white;
+  border-radius: 14px 14px 4px 14px;
+}
+
+.msg-klaira {
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.92);
+  border-radius: 14px 14px 14px 4px;
+  border: 1px solid rgba(255, 107, 157, 0.15);
+}
+
+/* Glow effects */
+.glow-pink {
+  box-shadow: 0 0 20px rgba(255, 107, 157, 0.3);
+}
+
+.glow-purple {
+  box-shadow: 0 0 20px rgba(199, 125, 255, 0.3);
+}
+
+/* Input */
+.klaira-input {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(199, 125, 255, 0.25);
+  border-radius: 10px;
+  color: white;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.klaira-input:focus {
+  border-color: rgba(199, 125, 255, 0.6);
+  box-shadow: 0 0 0 2px rgba(199, 125, 255, 0.1);
+}
+
+.klaira-input::placeholder {
+  color: rgba(255, 255, 255, 0.3);
+}

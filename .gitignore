@@ -1,0 +1,11 @@
+node_modules/
+dist/
+out/
+release/
+data/
+.env
+*.log
+
+# Keep model directory but not the actual vrm files
+assets/models/*.vrm
+!assets/models/.gitkeep
