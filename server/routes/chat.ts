@@ -1,6 +1,8 @@
 import { Router, Request, Response } from 'express'
 import { chat, updateApiKey } from '../services/aiClient'
 import { buildSystemPrompt } from '../services/personaBuilder'
+import { classifyMessage } from '../services/emotionClassifier'
+import { describeScreen } from '../services/screenVision'
 import {
   getRelationship,
   updateRelationship,
@@ -15,7 +17,7 @@ export const chatRouter = Router()
 
 chatRouter.post('/', async (req: Request, res: Response) => {
   try {
-    const { message, triggerContext }: ChatRequest = req.body
+    const { message, triggerContext, screenCapture }: ChatRequest = req.body
 
     if (!message && !triggerContext) {
       return res.status(400).json({ error: 'message or triggerContext required' })
@@ -31,20 +33,33 @@ chatRouter.post('/', async (req: Request, res: Response) => {
       content: m.content
     }))
 
+    const screenDescription = screenCapture
+      ? await describeScreen(screenCapture, apiKey).catch(() => '')
+      : ''
+
     const userContent = triggerContext
       ? `[System context — do not mention this directly]: ${triggerContext}`
-      : message
+      : screenDescription
+        ? `${message}\n\n[SCREEN CONTEXT — silent background only. Do NOT mention this unless the user is asking about their screen]: ${screenDescription}`
+        : message
 
     const messagesForAI = [
       ...historyMessages,
       { role: 'user' as const, content: userContent }
     ]
 
-    const response = await chat(systemPrompt, messagesForAI, apiKey)
+    // Run main AI and emotion classifier in parallel
+    const [response, userTag] = await Promise.all([
+      chat(systemPrompt, messagesForAI, apiKey),
+      classifyMessage(userContent, 'user', apiKey)
+    ])
 
     saveMessage({
       role: 'user',
       content: message || '',
+      emotion: userTag.emotion,
+      tone: userTag.tone,
+      animation: userTag.animation ?? undefined,
       timestamp: Date.now()
     })
 
@@ -52,6 +67,7 @@ chatRouter.post('/', async (req: Request, res: Response) => {
       role: 'assistant',
       content: response.text,
       emotion: response.emotion,
+      animation: userTag.animation ?? undefined,
       timestamp: Date.now()
     })
 
@@ -63,7 +79,7 @@ chatRouter.post('/', async (req: Request, res: Response) => {
       })
     }
 
-    res.json(response)
+    res.json({ ...response, animation: userTag.animation ?? undefined })
   } catch (err: any) {
     const detail = err?.error?.message || err?.message || 'Internal error'
     const status = err?.status || err?.error?.code || 500

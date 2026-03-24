@@ -5,6 +5,10 @@ import { SettingsPanel } from './components/SettingsPanel'
 import { PrivacyBadge } from './components/PrivacyBadge'
 import { useChat } from './hooks/useChat'
 
+const WIN_H = 420
+const WIN_NARROW = 265   // character only
+const WIN_WIDE   = 555   // character + chat panel
+
 type Panel = 'none' | 'chat' | 'settings'
 
 export function App() {
@@ -14,11 +18,11 @@ export function App() {
   const { messages, isLoading, currentEmotion, currentEnergy, sendMessage, addIntervention } =
     useChat()
 
-  // Listen for proactive interventions from main process
   useEffect(() => {
     const unsub = window.klaira.onIntervention((response) => {
       addIntervention(response)
       setPanel('chat')
+      window.klaira.resizeWindow(WIN_WIDE, WIN_H)
     })
     return unsub
   }, [addIntervention])
@@ -30,17 +34,21 @@ export function App() {
   }, [monitoring])
 
   const handleCharacterClick = useCallback(() => {
-    setPanel((prev) => (prev === 'chat' ? 'none' : 'chat'))
+    setPanel((prev) => {
+      const next = prev === 'chat' ? 'none' : 'chat'
+      window.klaira.resizeWindow(next === 'chat' ? WIN_WIDE : WIN_NARROW, WIN_H)
+      return next
+    })
   }, [])
 
   return (
     <div
       className="glass-panel flex flex-col overflow-hidden select-none"
-      style={{ width: '380px', height: '600px' }}
+      style={{ width: `${panel === 'chat' ? WIN_WIDE : WIN_NARROW}px`, height: `${WIN_H}px` }}
     >
       {/* Top bar */}
       <div
-        className="drag-region flex items-center justify-between px-3 py-2"
+        className="drag-region flex items-center justify-between px-3 py-2 shrink-0"
         style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}
       >
         <div className="no-drag flex items-center gap-2">
@@ -66,37 +74,37 @@ export function App() {
         </div>
       </div>
 
-      {/* VRM character view */}
-      <VRMViewer
-        emotion={currentEmotion}
-        energy={currentEnergy}
-        onCharacterClick={handleCharacterClick}
-      />
-
-      {/* Bottom panel area */}
-      <div className="flex-1" style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+      {/* Content area — chat panel left, VRM right (fixed width) */}
+      <div className="flex flex-row flex-1 overflow-hidden">
+        {/* Chat panel — slides in to the left of the character */}
         {panel === 'chat' && (
-          <ChatPanel
-            messages={messages}
-            isLoading={isLoading}
-            currentEmotion={currentEmotion}
-            onSend={sendMessage}
-            onClose={() => setPanel('none')}
-          />
-        )}
-
-        {panel === 'settings' && (
-          <SettingsPanel onClose={() => setPanel('none')} />
-        )}
-
-        {panel === 'none' && (
-          <div
-            className="h-full flex items-center justify-center"
-            style={{ color: 'rgba(255,255,255,0.15)' }}
-          >
-            <p className="text-xs">click klaira to chat</p>
+          <div className="no-drag flex-shrink-0" style={{ width: '290px' }}>
+            <ChatPanel
+              messages={messages}
+              isLoading={isLoading}
+              currentEmotion={currentEmotion}
+              onSend={sendMessage}
+              onClose={() => {
+                setPanel('none')
+                window.klaira.resizeWindow(WIN_NARROW, WIN_H)
+              }}
+            />
           </div>
         )}
+
+        {/* VRM area — fixed 400px, never changes size */}
+        <div className="relative flex-shrink-0" style={{ width: `${WIN_NARROW}px` }}>
+          <VRMViewer
+            emotion={currentEmotion}
+            energy={currentEnergy}
+            onCharacterClick={handleCharacterClick}
+          />
+          {panel === 'settings' && (
+            <div className="absolute inset-0 no-drag" style={{ zIndex: 10 }}>
+              <SettingsPanel onClose={() => setPanel('none')} />
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )

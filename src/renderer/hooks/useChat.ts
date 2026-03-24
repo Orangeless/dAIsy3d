@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import type { AIResponse, EmotionState } from '../../../server/types'
 import { emotionEngine } from '../engine/emotionEngine'
+import { triggerAnimation } from '../engine/animationManager'
 
 // In dev, use relative URL through Vite proxy (same origin). In production, use absolute.
 const SERVER = import.meta.env.DEV ? '' : 'http://127.0.0.1:3847'
@@ -57,6 +58,7 @@ export function useChat(): UseChatReturn {
     setCurrentEmotion(response.emotion)
     setCurrentEnergy(response.energy)
     startTalking(response.text)
+    if (response.animation) triggerAnimation(response.animation)
 
     if (response.action) {
       window.klaira.executeAction(response.action)
@@ -81,10 +83,15 @@ export function useChat(): UseChatReturn {
     setCurrentEnergy(0.5)
 
     try {
+      let screenCapture: string | null = null
+      try {
+        screenCapture = await window.klaira.captureScreen()
+      } catch { /* non-fatal */ }
+
       const res = await fetch(`${SERVER}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text })
+        body: JSON.stringify({ message: text, ...(screenCapture ? { screenCapture } : {}) })
       })
 
       if (!res.ok) throw new Error(`Server error: ${res.status}`)
@@ -103,6 +110,7 @@ export function useChat(): UseChatReturn {
       setCurrentEmotion(data.emotion)
       setCurrentEnergy(data.energy)
       startTalking(data.text)
+      if (data.animation) triggerAnimation(data.animation)
 
       if (data.action) {
         window.klaira.executeAction(data.action)

@@ -3,7 +3,7 @@ import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { VRM, VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm'
 import { emotionEngine } from '../engine/emotionEngine'
-import { AnimationManager } from '../engine/animationManager'
+import { AnimationManager, setActiveManager } from '../engine/animationManager'
 import type { EmotionState } from '../../../server/types'
 
 interface UseVRMOptions {
@@ -102,6 +102,15 @@ function patchVRMTextureLoading() {
 
 patchVRMTextureLoading()
 
+// Module-level camera ref so App can update lookAt when window resizes
+let _activeCamera: THREE.PerspectiveCamera | null = null
+let _lookAt = new THREE.Vector3(0, 0.8, 0)
+
+export function setCameraLookAt(x: number, y: number, z: number): void {
+  _lookAt.set(x, y, z)
+  _activeCamera?.lookAt(x, y, z)
+}
+
 export function useVRM({ canvasRef, emotion, energy }: Omit<UseVRMOptions, 'isLoading'>): void {
   const vrmRef = useRef<VRM | null>(null)
   const clockRef = useRef(new THREE.Clock())
@@ -118,6 +127,10 @@ export function useVRM({ canvasRef, emotion, energy }: Omit<UseVRMOptions, 'isLo
     const canvas = canvasRef.current
     if (!canvas) return
 
+    // Guard against React StrictMode's double-invoke: if cleanup runs while the
+    // VRM is still loading (async), the callback must be a no-op.
+    let cancelled = false
+
     const w = canvas.clientWidth || canvas.parentElement?.clientWidth || 380
     const h = canvas.clientHeight || canvas.parentElement?.clientHeight || 280
 
@@ -125,24 +138,26 @@ export function useVRM({ canvasRef, emotion, energy }: Omit<UseVRMOptions, 'isLo
     sceneRef.current = scene
 
     const camera = new THREE.PerspectiveCamera(30, w / h, 0.1, 20)
-    camera.position.set(0, 0.9, 4.5)
-    camera.lookAt(0, 0.9, 0)
+    camera.position.set(0, 0.8, 3.5)
+    camera.lookAt(0, 0.8, 0)
 
     const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true })
     renderer.setSize(w, h)
     renderer.setPixelRatio(window.devicePixelRatio)
     renderer.setClearColor(0x000000, 0)
     renderer.outputColorSpace = THREE.SRGBColorSpace
+    renderer.toneMapping = THREE.ACESFilmicToneMapping
+    renderer.toneMappingExposure = 0.9
     rendererRef.current = renderer
 
-    scene.add(new THREE.AmbientLight(0xffffff, 1.8))
-    const keyLight = new THREE.DirectionalLight(0xfff0f8, 2.5)
+    scene.add(new THREE.AmbientLight(0xfff5e8, 1.0))
+    const keyLight = new THREE.DirectionalLight(0xffddb8, 2.2)
     keyLight.position.set(1.5, 2, 3)
     scene.add(keyLight)
-    const fillLight = new THREE.DirectionalLight(0xc4d4ff, 1.2)
+    const fillLight = new THREE.DirectionalLight(0xc4d4ff, 0.8)
     fillLight.position.set(-2, 1, 2)
     scene.add(fillLight)
-    const rimLight = new THREE.DirectionalLight(0xff9de2, 0.8)
+    const rimLight = new THREE.DirectionalLight(0xff9de2, 0.6)
     rimLight.position.set(0, 3, -2)
     scene.add(rimLight)
 
@@ -155,6 +170,10 @@ export function useVRM({ canvasRef, emotion, energy }: Omit<UseVRMOptions, 'isLo
     loader.load(
       modelUrl,
       (gltf) => {
+        if (cancelled) {
+          VRMUtils.deepDispose(gltf.scene)
+          return
+        }
         const vrm = gltf.userData.vrm as VRM
         if (!vrm) {
           console.error('[VRM] Loaded but no VRM data — is klaira.vrm a valid VRM file?')
@@ -164,7 +183,7 @@ export function useVRM({ canvasRef, emotion, energy }: Omit<UseVRMOptions, 'isLo
         scene.add(vrm.scene)
         vrmRef.current = vrm
         console.log('[VRM] Model loaded successfully')
-        animManager.init(vrm).catch((e) => console.error('[Anim] init error:', e))
+        animManager.init(vrm).then(() => setActiveManager(animManager)).catch((e) => console.error('[Anim] init error:', e))
       },
       (progress) => {
         if (progress.total > 0) {
@@ -197,11 +216,12 @@ export function useVRM({ canvasRef, emotion, energy }: Omit<UseVRMOptions, 'isLo
       camera.aspect = rw / rh
       camera.updateProjectionMatrix()
       renderer.setSize(rw, rh)
-      camera.lookAt(0, 0.9, 0)
+      camera.lookAt(0, 0.8, 0)
     }
     window.addEventListener('resize', handleResize)
 
     return () => {
+      cancelled = true
       cancelAnimationFrame(animIdRef.current)
       window.removeEventListener('resize', handleResize)
       animManager.dispose()

@@ -55,7 +55,14 @@ export function ChatPanel({ messages, isLoading, currentEmotion, onSend, onClose
   const accentColor = EMOTION_COLORS[currentEmotion]
 
   return (
-    <div className="flex flex-col no-drag" style={{ height: '320px' }}>
+    <div
+      className="flex flex-col no-drag h-full"
+      style={{
+        background: 'rgba(13, 13, 26, 0.82)',
+        backdropFilter: 'blur(16px)',
+        borderRight: `1px solid ${accentColor}25`
+      }}
+    >
       {/* Header */}
       <div
         className="flex items-center justify-between px-4 py-2 drag-region"
@@ -128,7 +135,7 @@ export function ChatPanel({ messages, isLoading, currentEmotion, onSend, onClose
       </div>
 
       {/* Input */}
-      <div className="px-3 py-2" style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+      <div className="px-3 py-2" style={{ borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgb(13, 13, 26)' }}>
         <div className="flex gap-2">
           <input
             ref={inputRef}

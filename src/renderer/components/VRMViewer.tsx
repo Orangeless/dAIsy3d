@@ -15,15 +15,13 @@ export function VRMViewer({ emotion, energy, onCharacterClick }: VRMViewerProps)
 
   return (
     <div
-      className="relative w-full cursor-pointer select-none"
-      style={{ height: '280px' }}
+      className="absolute inset-0 cursor-pointer select-none"
       onClick={onCharacterClick}
       title="Click to chat with Klaira"
     >
       <canvas
         ref={canvasRef}
-        className="w-full h-full"
-        style={{ display: 'block' }}
+        style={{ display: 'block', width: '100%', height: '100%' }}
       />
       <div className="absolute bottom-2 left-1/2 -translate-x-1/2">
         <div

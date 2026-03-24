@@ -1,4 +1,4 @@
-import { ipcMain, app, safeStorage } from 'electron'
+import { ipcMain, app, safeStorage, desktopCapturer, screen } from 'electron'
 import path from 'path'
 import { executeAction } from '../actionExecutor'
 import { setEnabled } from '../screenWatcher'
@@ -28,5 +28,27 @@ export function registerHandlers(): void {
   ipcMain.on('klaira:toggle-always-on-top', (event, value: boolean) => {
     const win = event.sender.getOwnerBrowserWindow?.() ?? null
     win?.setAlwaysOnTop(value)
+  })
+
+  ipcMain.on('klaira:resize-window', (event, { width, height }: { width: number; height: number }) => {
+    const win = event.sender.getOwnerBrowserWindow?.() ?? null
+    if (!win) return
+    const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize
+    win.setBounds({ x: sw - width - 20, y: sh - height - 20, width, height })
+  })
+
+  ipcMain.handle('klaira:capture-screen', async () => {
+    try {
+      const sources = await desktopCapturer.getSources({
+        types: ['screen'],
+        thumbnailSize: { width: 768, height: 432 }
+      })
+      const img = sources[0]?.thumbnail
+      if (!img) return null
+      const buf = img.toJPEG(75)
+      return `data:image/jpeg;base64,${buf.toString('base64')}`
+    } catch {
+      return null
+    }
   })
 }

@@ -9,6 +9,8 @@ declare global {
       minimize: () => void
       setAlwaysOnTop: (value: boolean) => void
       onIntervention: (callback: (response: AIResponse) => void) => () => void
+      captureScreen: () => Promise<string | null>
+      resizeWindow: (width: number, height: number) => void
     }
   }
 }

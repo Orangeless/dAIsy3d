@@ -19,11 +19,13 @@ export interface AIResponse {
     parameters: Record<string, string>
   }
   internalMoodShift?: number
+  animation?: string
 }
 
 export interface ChatRequest {
   message: string
   triggerContext?: string
+  screenCapture?: string
 }
 
 export interface RelationshipState {
@@ -39,5 +41,7 @@ export interface Message {
   role: 'user' | 'assistant'
   content: string
   emotion?: EmotionState
+  tone?: string
+  animation?: string
   timestamp: number
 }

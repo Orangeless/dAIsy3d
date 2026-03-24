@@ -21,5 +21,11 @@ contextBridge.exposeInMainWorld('klaira', {
     const handler = (_: unknown, data: AIResponse) => callback(data)
     ipcRenderer.on('klaira:intervention', handler)
     return () => ipcRenderer.removeListener('klaira:intervention', handler)
-  }
+  },
+
+  captureScreen: (): Promise<string | null> =>
+    ipcRenderer.invoke('klaira:capture-screen'),
+
+  resizeWindow: (width: number, height: number): void =>
+    ipcRenderer.send('klaira:resize-window', { width, height })
 })

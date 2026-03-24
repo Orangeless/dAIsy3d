@@ -1,0 +1,47 @@
+[
+  {
+    "name": "hello",
+    "description": "Enthusiastic wave greeting, excited or happy welcome",
+    "emotions": ["happy", "playful", "surprised"]
+  },
+  {
+    "name": "idle1",
+    "description": "Subtle weight shift, neutral breathing variation",
+    "emotions": ["idle", "listening"]
+  },
+  {
+    "name": "idle2",
+    "description": "Gentle relaxed sway, calm and at ease",
+    "emotions": ["idle"]
+  },
+  {
+    "name": "idle3pause",
+    "description": "Still thoughtful pause, quietly contemplating or listening carefully",
+    "emotions": ["thinking", "focused", "listening"]
+  },
+  {
+    "name": "idle4pause",
+    "description": "Longer reflective pause, concerned, uncertain, or deep in thought",
+    "emotions": ["concerned", "focused", "thinking"]
+  },
+  {
+    "name": "picked_up",
+    "description": "Startled reaction, suddenly surprised or caught off guard",
+    "emotions": ["surprised"]
+  },
+  {
+    "name": "point longer",
+    "description": "Extended sustained point, emphasising something important or explaining at length",
+    "emotions": ["focused", "speaking", "playful"]
+  },
+  {
+    "name": "point2",
+    "description": "Quick confident point gesture, directing attention",
+    "emotions": ["playful", "speaking", "teasing"]
+  },
+  {
+    "name": "pointing2sec",
+    "description": "Brief teasing point, light playful jab or cheeky comment",
+    "emotions": ["teasing", "playful", "happy"]
+  }
+]

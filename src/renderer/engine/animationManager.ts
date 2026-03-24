@@ -23,6 +23,8 @@ export class AnimationManager {
   private baseIdleAction: THREE.AnimationAction | null = null
   private _ready = false
   private _variationTimer: ReturnType<typeof setTimeout> | null = null
+  // Tracks active 'finished' listeners so we can cancel them when an animation is interrupted
+  private _finishedListeners = new Map<THREE.AnimationAction, (e: any) => void>()
 
   async init(vrm: VRM): Promise<void> {
     this.mixer = new THREE.AnimationMixer(vrm.scene)
@@ -94,18 +96,30 @@ export class AnimationManager {
     const action = this.mixer.clipAction(clip)
     action.reset()
     action.setLoop(THREE.LoopRepeat, Infinity)
+    action.setEffectiveWeight(1)
     action.play()
     this.baseIdleAction = action
   }
 
   /**
    * Play a clip once over the base idle, then call onDone when finished.
-   * The base idle keeps running underneath via crossFade.
+   * Crossfades from whichever action is currently dominant (not always baseIdle,
+   * which may have weight ~0 if a variation is already playing).
    */
   private playOnce(name: string, onDone?: () => void): void {
     if (!this.mixer || !this.clips.has(name)) {
       onDone?.()
       return
+    }
+
+    // Cancel the stale finished-listener for any currently-playing action so it
+    // doesn't fire later and fight the new animation or double-invoke scheduleNextVariation.
+    if (this.currentAction) {
+      const stale = this._finishedListeners.get(this.currentAction)
+      if (stale) {
+        this.mixer.removeEventListener('finished', stale)
+        this._finishedListeners.delete(this.currentAction)
+      }
     }
 
     const clip = this.clips.get(name)!
@@ -114,30 +128,35 @@ export class AnimationManager {
     action.setLoop(THREE.LoopOnce, 1)
     action.clampWhenFinished = true
 
-    // Fade out base idle, fade in the new clip
-    if (this.baseIdleAction) {
-      this.baseIdleAction.crossFadeTo(action, 0.4, true)
-    } else {
-      action.fadeIn(0.4)
+    // Stop whatever is currently playing and immediately start the new clip at full weight.
+    // The base idle keeps ticking in the background at weight 0 so it's ready to resume.
+    if (this.currentAction && this.currentAction !== action) {
+      this.currentAction.stop()
     }
+    if (this.baseIdleAction && this.baseIdleAction !== action) {
+      this.baseIdleAction.setEffectiveWeight(0)
+    }
+    action.setEffectiveWeight(1)
     action.play()
 
     this.currentAction = action
     this.currentName = name
 
     if (onDone) {
-      // Poll for completion in update loop via a one-shot listener
       const onFinished = (e: any) => {
         if (e.action !== action) return
         this.mixer!.removeEventListener('finished', onFinished)
+        this._finishedListeners.delete(action)
         this.currentAction = null
         this.currentName = null
-        // Fade base idle back in
+        // Resume base idle at full weight
+        action.stop()
         if (this.baseIdleAction) {
-          action.crossFadeTo(this.baseIdleAction, 0.4, true)
+          this.baseIdleAction.setEffectiveWeight(1)
         }
         onDone()
       }
+      this._finishedListeners.set(action, onFinished)
       this.mixer.addEventListener('finished', onFinished)
     }
   }
@@ -159,9 +178,11 @@ export class AnimationManager {
     this.playOnce(name, () => this.scheduleNextVariation())
   }
 
-  /** Externally trigger a named clip (e.g. hello, picked_up) */
+  /** Externally trigger a named clip (e.g. hello, picked_up, pointing2sec) */
   play(name: string): void {
-    this.playOnce(name, () => {/* return to idle loop naturally */})
+    // Cancel any pending variation timer — variation will reschedule after this clip finishes
+    if (this._variationTimer) clearTimeout(this._variationTimer)
+    this.playOnce(name, () => this.scheduleNextVariation())
   }
 
   update(delta: number): void {
@@ -170,8 +191,13 @@ export class AnimationManager {
 
   dispose(): void {
     if (this._variationTimer) clearTimeout(this._variationTimer)
+    if (this.mixer) {
+      for (const listener of this._finishedListeners.values()) {
+        this.mixer.removeEventListener('finished', listener)
+      }
+    }
+    this._finishedListeners.clear()
     this.mixer?.stopAllAction()
-    this.mixer?.removeEventListener('finished', () => {})
     this.mixer = null
     this.clips.clear()
     this.currentAction = null
@@ -179,4 +205,17 @@ export class AnimationManager {
     this.baseIdleAction = null
     this._ready = false
   }
+}
+
+// ─── module-level singleton access ──────────────────────────────────────────
+// Lets useChat trigger animations without prop-drilling through the component tree.
+
+let _activeManager: AnimationManager | null = null
+
+export function setActiveManager(mgr: AnimationManager): void {
+  _activeManager = mgr
+}
+
+export function triggerAnimation(name: string): void {
+  _activeManager?.play(name)
 }
